@@ -1,0 +1,32 @@
+# One-command local run of both planes.
+#
+#   docker compose up --build
+#   open http://localhost:8001
+#
+# Runs entirely on the mock backends — no API key, no cost. To use the real
+# OpenAI Realtime + thinker, set REALTIME_BACKEND=openai, THINKER_BACKEND=openai,
+# and OPENAI_API_KEY in your environment before `docker compose up`.
+
+services:
+  business:
+    build: .
+    command: python -m business.server
+    environment:
+      - BUSINESS_ADDR=0.0.0.0:8002
+      - THINKER_BACKEND=${THINKER_BACKEND:-mock}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    expose:
+      - "8002"
+
+  gateway:
+    build: .
+    command: python -m gateway.server
+    environment:
+      - BUSINESS_ADDR=business:8002
+      - GATEWAY_PORT=8001
+      - REALTIME_BACKEND=${REALTIME_BACKEND:-mock}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    ports:
+      - "8001:8001"
+    depends_on:
+      - business

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audio Gateway POC</title>
+<style>
+  :root{
+    --bg:#0a0a0a;--surface:#141414;--surface2:#1c1c1c;--border:#262626;
+    --text:#e5e5e5;--muted:#737373;--accent:#3b82f6;--accent-glow:rgba(59,130,246,0.12);
+    --green:#22c55e;--amber:#eab308;--red:#ef4444;--purple:#a855f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:'SF Mono','Fira Code','JetBrains Mono',Consolas,monospace;font-size:13px}
+  .app{max-width:1200px;margin:0 auto;border:1px solid var(--border)}
+  header{padding:12px 18px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .title{font-size:13px;font-weight:600;letter-spacing:.5px}
+  .status{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.on{background:var(--green)}
+  .switch{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .switch button{padding:6px 12px;border:none;background:var(--surface);color:var(--text);
+    font-family:inherit;font-size:11px;cursor:pointer}
+  .switch button.active{background:var(--accent);color:#fff}
+  .planes{display:flex;align-items:stretch;padding:18px;border-bottom:1px solid var(--border)}
+  .plane{flex:1;border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:12px}
+  .plane.biz{flex:1.15}
+  .plane h3{margin:0 0 10px;font-size:10px;color:var(--muted);text-transform:uppercase;
+    letter-spacing:1px;display:flex;align-items:center;gap:6px;font-weight:500}
+  .comp{font-size:11px;padding:6px 9px;background:var(--surface2);border:1px solid var(--border);
+    border-radius:5px;margin-bottom:6px;transition:all .3s}
+  .comp.active{border-color:var(--accent);background:var(--accent-glow);color:var(--accent)}
+  .comp.fire{border-color:var(--green);background:rgba(34,197,94,.12);color:var(--green)}
+  .comp.firep{border-color:var(--purple);background:rgba(168,85,247,.14);color:var(--purple)}
+  .channel{width:120px;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;padding:0 6px}
+  .wire{width:100%;height:1px;background:var(--border);position:relative;margin:10px 0}
+  .pkt{position:absolute;top:-7px;font-size:9px;white-space:nowrap;opacity:0}
+  .subgroup{border:1px solid var(--border);border-top:none;border-radius:0 0 5px 5px;
+    padding:8px 8px 4px 14px;margin-bottom:6px;background:rgba(168,85,247,.04);position:relative}
+  .subgroup::before{content:'';position:absolute;left:6px;top:0;bottom:8px;width:1px;
+    background:var(--purple);opacity:.3}
+  .subgroup .lbl{font-size:9px;color:var(--purple);margin-bottom:5px;opacity:.7}
+  .lower{display:grid;grid-template-columns:1fr 300px}
+  .left{padding:14px 18px;border-right:1px solid var(--border)}
+  .sec{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:0 0 10px}
+  .turn{display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:5px}
+  .turn .id{color:var(--muted);width:34px}
+  .turn .bar{flex:1;height:18px;background:var(--surface2);border-radius:3px;
+    display:flex;align-items:center;padding:0 8px;color:var(--muted)}
+  .turn.live .bar{background:var(--accent-glow);border:1px solid var(--accent);color:var(--accent)}
+  .turn.stale .bar{text-decoration:line-through;opacity:.5}
+  .turn .tag{margin-left:auto;text-decoration:none}
+  .convo{display:flex;flex-direction:column;gap:8px;margin-top:8px;max-height:200px;overflow:auto}
+  .msg{max-width:80%;padding:7px 11px;border-radius:8px;font-size:12px}
+  .msg.user{align-self:flex-end;background:var(--accent);color:#fff}
+  .msg.assistant{align-self:flex-start;background:var(--surface);border:1px solid var(--border)}
+  .msg .who{font-size:9px;color:var(--accent);text-transform:uppercase;display:block;margin-bottom:3px}
+  .log{padding:14px 16px;background:var(--bg)}
+  .evlog{display:flex;flex-direction:column;gap:3px;font-size:10.5px;max-height:260px;overflow:auto}
+  .ev{padding:4px 7px;border-radius:3px;color:var(--muted);border-left:2px solid var(--border);word-break:break-all}
+  .ev.tool{color:var(--green);border-left-color:var(--green)}
+  .ev.local{color:var(--purple);border-left-color:var(--purple)}
+  .ev.barge{color:var(--red);border-left-color:var(--red)}
+  footer{padding:12px 18px;border-top:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;gap:14px}
+  .viz{display:flex;gap:2px;align-items:center;height:24px}
+  .viz div{width:3px;background:var(--accent);border-radius:2px}
+  button.ctl{padding:8px 18px;border-radius:6px;font-family:inherit;font-size:12px;cursor:pointer}
+  button.go{border:1px solid var(--accent);background:var(--accent);color:#fff}
+  button.barge{border:1px solid var(--red);background:var(--surface);color:var(--red)}
+  .cap{text-align:center;font-size:10px;color:var(--muted);margin-top:10px;font-style:italic}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div style="display:flex;align-items:center;gap:14px">
+      <span class="title">AUDIO GATEWAY POC</span>
+      <span class="status"><span class="dot" id="dot"></span><span id="statusText">disconnected</span></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">agent</span>
+      <div class="switch">
+        <button id="sw-single" class="active" onclick="setAgent('cafe_single')">Single</button>
+        <button id="sw-rt" onclick="setAgent('cafe_responder_thinker')">Responder–Thinker</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="planes">
+    <div class="plane">
+      <h3><span class="dot" style="background:var(--amber)"></span>audio gateway · media plane</h3>
+      <div class="comp" id="gw-vad">VAD</div>
+      <div class="comp" id="gw-playback">playback / pacing</div>
+      <div class="comp" id="gw-proxy">proxy tools <span id="proxct" style="color:var(--muted)">×0</span></div>
+      <div class="comp" id="gw-turn">turn_id <span id="turnval" style="color:var(--accent)">0</span></div>
+    </div>
+    <div class="channel">
+      <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">gRPC bidi</div>
+      <div class="wire"><div class="pkt" id="pkt-lr" style="color:var(--green)">tool ▶</div></div>
+      <div class="wire"><div class="pkt" id="pkt-rl" style="color:var(--purple)">◀ output</div></div>
+      <div style="font-size:9px;color:var(--muted);margin-top:8px;text-align:center;line-height:1.4">mTLS<br>+token</div>
+    </div>
+    <div class="plane biz">
+      <h3><span class="dot" style="background:var(--green)"></span>business plane · meaning</h3>
+      <div class="comp" id="bz-agent"><span id="agentLabel">—</span></div>
+      <div id="rtWrap" style="display:none">
+        <div class="comp" id="bz-thinker" style="margin-bottom:0;border-radius:5px 5px 0 0">thinker tool</div>
+        <div class="subgroup">
+          <div class="lbl">thinker calls more tools — stays in business plane</div>
+          <div class="comp" id="th-get_menu" style="margin-bottom:4px">get_menu</div>
+          <div class="comp" id="th-place_order" style="margin-bottom:4px">place_order</div>
+        </div>
+      </div>
+      <div id="toolsWrap"><div class="comp" id="bz-tools">café tools</div></div>
+      <div class="comp" id="bz-stale">staleness check</div>
+    </div>
+  </div>
+  <div class="cap">audio timing never waits on business work · one envelope out, one back — the tree in between is invisible to the gateway</div>
+
+  <div class="lower">
+    <div class="left">
+      <p class="sec">turn timeline</p>
+      <div id="timeline"></div>
+      <p class="sec" style="margin-top:16px">conversation</p>
+      <div class="convo" id="convo"></div>
+    </div>
+    <div class="log">
+      <p class="sec">event stream</p>
+      <div class="evlog" id="evlog"></div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="viz" id="viz"></div>
+    <button class="ctl go" id="connectBtn" onclick="toggleConnect()">▶ Connect</button>
+    <button class="ctl barge" onclick="sendBargeIn()">Barge-in</button>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

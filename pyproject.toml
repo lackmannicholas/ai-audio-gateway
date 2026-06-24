@@ -1,0 +1,27 @@
+[project]
+name = "audio-gateway-poc"
+version = "0.1.0"
+description = "A runnable reference for the two-plane voice AI architecture: an audio gateway (media plane) and a business plane, bridged by gRPC, with hollow proxy tools."
+requires-python = ">=3.13"
+dependencies = [
+    "grpcio>=1.68",
+    "orjson>=3.10",
+    "pydantic>=2.9",
+    "starlette>=0.40",
+    "uvicorn>=0.32",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.50", "websockets>=13"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["proto_contract", "gateway", "gateway.realtime", "gateway.audio",
+            "business", "business.agents", "business.tools", "business.domain"]
