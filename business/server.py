@@ -14,6 +14,9 @@ import os
 
 from business.grpc_server import BusinessBridgeServer
 from proto_contract.auth import server_credentials
+from proto_contract.env import load_runtime_env
+
+load_runtime_env()
 
 
 async def main() -> None:

@@ -5,7 +5,8 @@ voice AI: split the system into a **media plane** (the audio gateway) and a
 **business plane** (agents, tools, reasoning), and bridge them with a
 bidirectional gRPC stream.
 
-The gateway owns hard real-time work — audio I/O, VAD, pacing, barge-in. The
+The gateway owns hard real-time work — browser WebRTC, audio I/O, VAD, pacing,
+barge-in. The
 business plane owns meaning — prompts, tools, multi-step reasoning. Between them
 runs a small, typed contract. The realtime model only ever holds **hollow proxy
 tools**: it calls them like local functions, but every call relays across the
@@ -15,7 +16,7 @@ This repo demonstrates the pattern end-to-end with a café ordering assistant,
 and runs entirely on a **mock realtime model** — no API key, no cost.
 
 ```
-┌────────────────┐   WS    ┌─────────────────────┐  gRPC   ┌────────────────┐
+┌────────────────┐ WebRTC  ┌─────────────────────┐  gRPC   ┌────────────────┐
 │ browser        │ ──────▶ │  AUDIO GATEWAY      │ ◀─────▶ │ BUSINESS PLANE │
 │ (plays "phone")│         │  media plane         │  bidi   │ meaning        │
 └────────────────┘         │  VAD · pacing ·      │ stream  │ agents · tools │
@@ -41,8 +42,16 @@ Want it real instead of mocked? Set an OpenAI key and flip the backends:
 
 ```bash
 export OPENAI_API_KEY=sk-...
+# Optional: mirrors the responder-thinker regional endpoint.
+export OPENAI_BASE_URL=https://us.api.openai.com/v1
 make run-openai      # REALTIME_BACKEND=openai THINKER_BACKEND=openai
 ```
+
+You can also put local settings in a repo-root `.env` file. Values already set
+in your shell take precedence over `.env`; see `.env.example` for the common
+knobs. The realtime websocket uses `OPENAI_REALTIME_URL` if set, then
+`REALTIME_API_URL`, then derives from `OPENAI_BASE_URL`, and otherwise defaults
+to `wss://us.api.openai.com/v1/realtime`.
 
 Optional mutual TLS on the bridge:
 
@@ -95,6 +104,8 @@ tests/            contract, proxy relay, turn staleness, full stack, mTLS
 - The **mock realtime model** is a scripted state machine, not an LLM. It speaks
   enough of a realtime event protocol to drive a full turn (transcript → tool
   call → audio) so the architecture runs deterministically without a key.
+  Browser speech synthesis is used as an audible stand-in in mock mode; use
+  `make run-openai` for a real speech-to-speech conversation.
 - The **VAD** is a trivial energy gate — good enough to demo barge-in, not
   production-grade. Swap in Silero/WebRTC VAD behind the same interface.
 - **mTLS + a shared token** secure the bridge. In production you'd use rotated,

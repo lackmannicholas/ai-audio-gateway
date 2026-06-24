@@ -7,3 +7,4 @@ __pycache__/
 harness/certs/*.crt
 harness/certs/*.key
 harness/certs/*.srl
+.env

@@ -35,6 +35,11 @@ class RealtimeEventType(str, enum.Enum):
     TOOL_CALL = "tool_call"              # model wants to call a tool
     RESPONSE_DONE = "response_done"      # assistant turn complete
     SPEECH_STARTED = "speech_started"    # model detected user speech (server VAD)
+    ERROR = "error"                      # backend session ended with an error
+
+
+class RealtimeBackendClosed(RuntimeError):
+    """Raised when the backend transport closes while the gateway is active."""
 
 
 @dataclass
@@ -88,6 +93,7 @@ class RealtimeBackend(abc.ABC):
 
 __all__ = [
     "RealtimeBackend",
+    "RealtimeBackendClosed",
     "RealtimeEvent",
     "RealtimeEventType",
     "RealtimeSessionConfig",

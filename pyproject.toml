@@ -5,14 +5,18 @@ description = "A runnable reference for the two-plane voice AI architecture: an 
 requires-python = ">=3.13"
 dependencies = [
     "grpcio>=1.68",
+    "aiortc>=1.14",
+    "numpy>=1.26",
     "orjson>=3.10",
     "pydantic>=2.9",
+    "python-dotenv>=1.0",
     "starlette>=0.40",
     "uvicorn>=0.32",
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.50", "websockets>=13"]
+openai = ["openai>=1.50"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [tool.pytest.ini_options]

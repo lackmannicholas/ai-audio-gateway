@@ -16,6 +16,9 @@ import os
 import uvicorn
 
 from gateway.app import build_app
+from proto_contract.env import load_runtime_env
+
+load_runtime_env()
 
 app = build_app(business_addr=os.getenv("BUSINESS_ADDR", "127.0.0.1:8002"))
 

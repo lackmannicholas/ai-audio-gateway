@@ -1,11 +1,15 @@
 // Audio Gateway POC — browser client.
-// Connects to the gateway over a websocket, streams mic audio in, and renders
-// the live architecture view from the UI event stream the gateway emits.
+// Connects to the gateway over WebRTC for audio. Structured UI events are
+// streamed over SSE from the same gateway session.
 
-let ws = null;
+let peerConnection = null;
+let eventSource = null;
 let agent = "cafe_single";
-let audioCtx = null;
 let micStream = null;
+let remoteAudio = null;
+let sessionId = null;
+let ttsEnabled = false;
+let cleaningUp = false;
 let turnId = 0;
 let liveTurnEl = null;
 
@@ -33,7 +37,7 @@ function vizActive(on) {
 }
 
 function setAgent(which) {
-  if (ws) return; // can't switch mid-call
+  if (peerConnection) return; // can't switch mid-call
   agent = which;
   $("sw-single").classList.toggle("active", which === "cafe_single");
   $("sw-rt").classList.toggle("active", which === "cafe_responder_thinker");
@@ -97,10 +101,49 @@ function markStale() {
   if (tag) { tag.textContent = "✕ stale"; tag.style.color = "var(--red)"; }
 }
 
+function resetSessionUi() {
+  turnId = 0;
+  liveTurnEl = null;
+  $("turnval").textContent = "0";
+  $("proxct").textContent = "×0";
+  $("agentLabel").textContent = "—";
+  $("timeline").replaceChildren();
+  $("convo").replaceChildren();
+  $("evlog").replaceChildren();
+  document.querySelectorAll(".comp").forEach(el => {
+    el.classList.remove("active", "fire", "firep");
+  });
+  document.querySelectorAll(".pkt").forEach(el => {
+    el.style.opacity = "0";
+    el.style.left = "0%";
+  });
+}
+
+function speakAssistant(text) {
+  if (!ttsEnabled || !("speechSynthesis" in window) || !text) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.03;
+  utterance.pitch = 1.0;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
+}
+
 // ---- event stream from the gateway ----
 function handleEvent(ev) {
   switch (ev.kind) {
     case "connected":
+      ttsEnabled = !!ev.mock_tts;
+      logEvent("connected · " + (ev.transport || "webrtc"));
+      break;
+    case "session_ended":
+      cleanupConnection({ notify: false });
+      break;
+    case "error": {
+      const message = ev.message || "session error";
+      cleanupConnection({ notify: false });
+      logEvent("error · " + message, "barge");
+      break;
+    }
     case "session_configured": {
       const tools = ev.tools || [];
       $("agentLabel").textContent = agent === "cafe_responder_thinker" ? "responder" : "single agent";
@@ -117,6 +160,7 @@ function handleEvent(ev) {
       logEvent("user.speech_stopped"); break;
     case "transcript":
       addMessage(ev.role, ev.text);
+      if (ev.role === "assistant") speakAssistant(ev.text);
       logEvent("transcript · " + ev.role); break;
     case "tool_call_requested":
       $("gw-proxy").classList.add("active");
@@ -136,6 +180,10 @@ function handleEvent(ev) {
       $("gw-proxy").classList.remove("active");
       logEvent("tool_call.output · " + (ev.name || ""), "tool");
       break;
+    case "tool_call_stale":
+      $("gw-proxy").classList.remove("active");
+      logEvent("tool_call.stale · " + (ev.name || ""), "barge");
+      break;
     case "audio_delta":
       $("gw-playback").classList.add("active");
       setTimeout(() => $("gw-playback").classList.remove("active"), 120);
@@ -153,54 +201,141 @@ function handleEvent(ev) {
   }
 }
 
-// ---- mic capture: downsample to 8kHz 16-bit PCM, 20ms frames ----
-async function startMic() {
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 8000 });
-  const src = audioCtx.createMediaStreamSource(micStream);
-  const proc = audioCtx.createScriptProcessor(2048, 1, 1);
-  src.connect(proc); proc.connect(audioCtx.destination);
-  proc.onaudioprocess = (e) => {
-    if (!ws || ws.readyState !== 1) return;
-    const f32 = e.inputBuffer.getChannelData(0);
-    const i16 = new Int16Array(f32.length);
-    for (let i = 0; i < f32.length; i++) {
-      const s = Math.max(-1, Math.min(1, f32[i]));
-      i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    const bytes = new Uint8Array(i16.buffer);
-    let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    ws.send(JSON.stringify({ kind: "audio", pcm_b64: btoa(bin) }));
-  };
-}
+function cleanupConnection(options = {}) {
+  if (cleaningUp) return;
+  cleaningUp = true;
 
-function stopMic() {
+  const notify = options.notify !== false;
+  const sid = sessionId;
+  sessionId = null;
+
+  if (notify && sid) {
+    try {
+      navigator.sendBeacon(
+        "/api/rtc/disconnect",
+        new Blob([JSON.stringify({ session_id: sid })], { type: "application/json" }),
+      );
+    } catch (_) { }
+  }
+
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  if (peerConnection) {
+    const pc = peerConnection;
+    peerConnection = null;
+    pc.onconnectionstatechange = null;
+    pc.ontrack = null;
+    pc.close();
+  }
   if (micStream) micStream.getTracks().forEach(t => t.stop());
-  if (audioCtx) audioCtx.close();
-  micStream = null; audioCtx = null;
+  if (remoteAudio) {
+    remoteAudio.pause();
+    remoteAudio.srcObject = null;
+    remoteAudio = null;
+  }
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  micStream = null;
+  ttsEnabled = false;
+  $("dot").classList.remove("on");
+  $("statusText").textContent = "disconnected";
+  $("connectBtn").textContent = "▶ Connect";
+  vizActive(false);
+  resetSessionUi();
+  cleaningUp = false;
 }
 
 async function toggleConnect() {
-  if (ws) { ws.close(); return; }
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws?agent=${agent}`);
-  ws.onopen = async () => {
+  if (peerConnection) {
+    cleanupConnection();
+    return;
+  }
+
+  $("statusText").textContent = "connecting";
+  $("connectBtn").textContent = "■ Disconnect";
+  resetSessionUi();
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+
+    peerConnection = new RTCPeerConnection();
+    const pc = peerConnection;
+
+    micStream.getTracks().forEach(track => pc.addTrack(track, micStream));
+
+    pc.ontrack = (event) => {
+      remoteAudio = new Audio();
+      remoteAudio.autoplay = true;
+      remoteAudio.srcObject = event.streams[0];
+      remoteAudio.play().catch(() => logEvent("audio autoplay blocked", "barge"));
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      logEvent("rtc · " + state);
+      if (state === "connected") {
+        $("dot").classList.add("on");
+        $("statusText").textContent = "connected";
+      } else if (["failed", "closed", "disconnected"].includes(state)) {
+        cleanupConnection();
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === "complete") {
+        resolve();
+        return;
+      }
+      pc.addEventListener("icegatheringstatechange", () => {
+        if (pc.iceGatheringState === "complete") resolve();
+      });
+    });
+
+    const response = await fetch("/api/rtc/offer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, agent }),
+    });
+    if (!response.ok) throw new Error(`rtc offer failed: ${response.status}`);
+    const answer = await response.json();
+    sessionId = answer.session_id;
+
+    eventSource = new EventSource(`/api/events/${sessionId}`);
+    eventSource.onmessage = (event) => handleEvent(JSON.parse(event.data));
+    eventSource.onerror = () => logEvent("event stream interrupted", "barge");
+
+    await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+
     $("dot").classList.add("on");
     $("statusText").textContent = "connected";
-    $("connectBtn").textContent = "■ Disconnect";
     vizActive(true);
     newLiveTurn("listening…");
-    try { await startMic(); } catch (e) { logEvent("mic error: " + e.message, "barge"); }
-  };
-  ws.onmessage = (m) => handleEvent(JSON.parse(m.data));
-  ws.onclose = () => {
-    $("dot").classList.remove("on");
-    $("statusText").textContent = "disconnected";
-    $("connectBtn").textContent = "▶ Connect";
-    vizActive(false); stopMic(); ws = null;
-  };
+  } catch (e) {
+    const message = e.message;
+    cleanupConnection({ notify: false });
+    logEvent("connect error: " + message, "barge");
+  }
 }
 
 function sendBargeIn() {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ kind: "barge_in" }));
+  if (!sessionId) return;
+  fetch("/api/rtc/barge-in", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  }).catch(() => logEvent("barge-in request failed", "barge"));
 }
+
+window.addEventListener("beforeunload", cleanupConnection);

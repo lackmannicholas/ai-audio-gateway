@@ -23,6 +23,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from contextlib import suppress
 from typing import Any
 
 import grpc
@@ -180,10 +181,17 @@ class BusinessBridgeClient:
             await self._send_event(GatewayEvent(
                 type=GatewayEventType.CALL_ENDED, call_id=self._call_id))
         finally:
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.cancel()
+            self._pending.clear()
             if self._call is not None:
-                await self._call.done_writing()
+                with suppress(Exception):
+                    await self._call.done_writing()
             if self._reader_task is not None:
                 self._reader_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._reader_task
 
 
 __all__ = ["BusinessBridgeClient", "ProxyTool", "SessionConfig"]

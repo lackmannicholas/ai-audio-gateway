@@ -17,8 +17,10 @@ audio frames keep flowing.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 
 import grpc
 
@@ -27,6 +29,7 @@ from gateway.audio.vad import EnergyVAD
 from gateway.grpc_business_client import BusinessBridgeClient
 from gateway.realtime.protocol import (
     RealtimeBackend,
+    RealtimeBackendClosed,
     RealtimeEvent,
     RealtimeEventType,
     RealtimeSessionConfig,
@@ -59,6 +62,8 @@ class GatewaySession:
         self._channel: grpc.aio.Channel | None = None
         self._proxies: dict = {}
         self._event_task: asyncio.Task | None = None
+        self._relay_tasks: set[asyncio.Task] = set()
+        self._stopped = False
 
     # -- lifecycle ----------------------------------------------------------- #
     async def start(self) -> None:
@@ -118,11 +123,16 @@ class GatewaySession:
         if ev.type is RealtimeEventType.TOOL_CALL:
             # The model called a (proxy) tool. Relay across the wire — but do it
             # off to the side so audio handling never blocks on it.
-            asyncio.create_task(self._relay_tool(ev))
+            task = asyncio.create_task(self._relay_tool(ev))
+            self._relay_tasks.add(task)
+            task.add_done_callback(self._relay_tasks.discard)
 
         elif ev.type is RealtimeEventType.AUDIO_DELTA:
             self._interrupt.begin_response()
-            self._ui("audio_delta", {"pcm_len": ev.payload.get("pcm_len", 0)})
+            data = {"pcm_len": ev.payload.get("pcm_len", 0)}
+            if "audio_b64" in ev.payload:
+                data["audio_b64"] = ev.payload["audio_b64"]
+            self._ui("audio_delta", data)
 
         elif ev.type is RealtimeEventType.TRANSCRIPT:
             self._ui("transcript", {"role": ev.payload.get("role"),
@@ -136,10 +146,14 @@ class GatewaySession:
             if self._interrupt.response_active:
                 await self._barge_in()
 
+        elif ev.type is RealtimeEventType.ERROR:
+            self._ui("error", {
+                "message": ev.payload.get("message", "Realtime backend closed"),
+            })
+
     async def _relay_tool(self, ev: RealtimeEvent) -> None:
         name = ev.payload.get("name")
         tool_call_id = ev.payload.get("tool_call_id")
-        import json
         args = json.loads(ev.payload.get("arguments_json") or "{}")
         self._ui("tool_call_requested", {"name": name})
         proxy = self._proxies.get(name)
@@ -148,17 +162,41 @@ class GatewaySession:
             return
         # The proxy call IS the relay across the wire to the business plane.
         result = await proxy.call(args)
+        if isinstance(result, dict) and result.get("stale") is True:
+            # The business plane finished work for a turn the caller already
+            # interrupted. Do not wake the realtime model back up with it.
+            self._ui("tool_call_stale", {
+                "name": name,
+                "turn_id": result.get("turn_id"),
+            })
+            return
         await self._realtime.submit_tool_output(tool_call_id, json.dumps(result))
         self._ui("tool_call_output", {"name": name})
 
     async def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
+
         if self._event_task:
             self._event_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._event_task
+
+        for task in list(self._relay_tasks):
+            task.cancel()
+        for task in list(self._relay_tasks):
+            with suppress(asyncio.CancelledError):
+                await task
+
         if self._client:
-            await self._client.end_call()
-        await self._realtime.close()
+            with suppress(Exception):
+                await self._client.end_call()
+        with suppress(RealtimeBackendClosed, Exception):
+            await self._realtime.close()
         if self._channel:
-            await self._channel.close()
+            with suppress(Exception):
+                await self._channel.close()
 
 
 __all__ = ["GatewaySession", "UISink"]

@@ -22,13 +22,17 @@ from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from gateway.realtime.openai_backend import build_realtime_backend
+from gateway.rtc import RTCGateway, rtc_barge_in, rtc_disconnect, rtc_events, rtc_offer
 from gateway.session import GatewaySession
+from proto_contract.env import load_runtime_env
+
+load_runtime_env()
 
 logger = logging.getLogger("gateway.app")
 
@@ -41,6 +45,10 @@ async def _index(request: Request) -> FileResponse:
 
 async def _health(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
+
+
+async def _favicon(request: Request) -> Response:
+    return Response(status_code=204)
 
 
 async def _ws(websocket: WebSocket) -> None:
@@ -92,10 +100,16 @@ def build_app(business_addr: str = "127.0.0.1:8002") -> Starlette:
     app = Starlette(routes=[
         Route("/", _index),
         Route("/health", _health),
+        Route("/favicon.ico", _favicon),
+        Route("/api/rtc/offer", rtc_offer, methods=["POST"]),
+        Route("/api/rtc/barge-in", rtc_barge_in, methods=["POST"]),
+        Route("/api/rtc/disconnect", rtc_disconnect, methods=["POST"]),
+        Route("/api/events/{session_id}", rtc_events),
         WebSocketRoute("/ws", _ws),
         # Static assets (app.js, etc.)
     ])
     app.state.business_addr = business_addr
+    app.state.rtc_gateway = RTCGateway()
     app.mount("/static", StaticFiles(directory=str(_BROWSER_DIR)), name="static")
     return app
 
