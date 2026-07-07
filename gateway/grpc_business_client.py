@@ -166,9 +166,10 @@ class BusinessBridgeClient:
         return await fut
 
     # -- media-plane events the gateway reports ------------------------------ #
-    async def barge_in(self) -> int:
-        """Caller interrupted: bump turn_id and tell the business plane."""
-        self._turn_id += 1
+    async def barge_in(self, turn_id: int) -> int:
+        """Caller interrupted. The session's InterruptState owns the turn_id;
+        this just records it and carries it across the wire."""
+        self._turn_id = turn_id
         await self._send_event(GatewayEvent(
             type=GatewayEventType.BARGE_IN,
             call_id=self._call_id,

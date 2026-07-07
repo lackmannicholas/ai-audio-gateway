@@ -1,7 +1,9 @@
 """Run the business plane gRPC server.
 
-    python -m business.server         # insecure (no certs present)
-    python -m business.server         # mTLS if harness/certs/*.crt exist
+    python -m business.server
+
+Runs insecure when no certs are present; auto-enables mTLS when
+harness/certs/*.crt exist (generate them with `make certs`).
 
 Listens on 127.0.0.1:8002 by default (override with BUSINESS_ADDR).
 """

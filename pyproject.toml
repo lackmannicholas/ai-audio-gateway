@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.9",
     "python-dotenv>=1.0",
     "starlette>=0.40",
+    "ten-vad>=1.0.6",
     "uvicorn>=0.32",
     "websockets>=13",
 ]

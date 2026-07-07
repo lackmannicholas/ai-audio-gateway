@@ -190,6 +190,9 @@ function handleEvent(ev) {
       break;
     case "response_done":
       logEvent("response.done"); break;
+    case "turn_latency":
+      logEvent("turn latency · " + ev.ms + "ms (commit → first audio)");
+      break;
     case "barge_in":
       turnId = ev.turn_id;
       $("turnval").textContent = turnId;

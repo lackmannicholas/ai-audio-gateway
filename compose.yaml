@@ -23,6 +23,7 @@ services:
     command: python -m gateway.server
     environment:
       - BUSINESS_ADDR=business:8002
+      - GATEWAY_HOST=0.0.0.0
       - GATEWAY_PORT=8001
       - REALTIME_BACKEND=${REALTIME_BACKEND:-mock}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

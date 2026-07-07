@@ -24,7 +24,13 @@ app = build_app(business_addr=os.getenv("BUSINESS_ADDR", "127.0.0.1:8002"))
 
 
 def main() -> None:
-    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("GATEWAY_PORT", "8001")))
+    # Default to loopback for local runs; containers must set GATEWAY_HOST=0.0.0.0
+    # (compose does) or the published port maps to nothing.
+    uvicorn.run(
+        app,
+        host=os.getenv("GATEWAY_HOST", "127.0.0.1"),
+        port=int(os.getenv("GATEWAY_PORT", "8001")),
+    )
 
 
 if __name__ == "__main__":

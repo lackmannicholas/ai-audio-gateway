@@ -129,14 +129,24 @@ class RTCGatewayCall:
             business_addr=self.business_addr,
             agent_kind=self.agent_kind,
             ui=self._emit_ui_event,
+            # So barge-in fires while paced audio is still draining, not just
+            # while the model is generating.
+            pending_audio=lambda: self.output_track.has_queued_audio,
         )
         self._audio_task: asyncio.Task | None = None
+        # Realtime output audio goes through one queue + one consumer task so
+        # chunk ordering is guaranteed. (A task per delta only preserves order
+        # by accident of scheduling, and the stateful resampler would corrupt
+        # audio if two conversions ever interleaved.)
+        self._realtime_audio: asyncio.Queue[str] = asyncio.Queue()
+        self._audio_out_task: asyncio.Task | None = None
         self._started = asyncio.Event()
         self._closed = False
         self._close_lock = asyncio.Lock()
 
     async def start(self) -> None:
         await self.gateway.start()
+        self._audio_out_task = asyncio.create_task(self._pump_realtime_audio())
         self._started.set()
         self.event_queue.put_nowait({
             "kind": "connected",
@@ -150,14 +160,23 @@ class RTCGatewayCall:
         if kind == "audio_delta":
             audio_b64 = event_data.pop("audio_b64", None)
             if audio_b64:
-                asyncio.create_task(self._push_realtime_audio(str(audio_b64)))
+                self._realtime_audio.put_nowait(str(audio_b64))
         elif kind == "barge_in":
+            # Drop everything not yet played: pending conversions and the
+            # paced track's queue.
+            while not self._realtime_audio.empty():
+                try:
+                    self._realtime_audio.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
             self.output_track.clear()
         self.event_queue.put_nowait({"kind": kind, **event_data})
 
-    async def _push_realtime_audio(self, audio_b64: str) -> None:
-        frame = self.converter.realtime_b64_to_aiortc_frame(audio_b64)
-        await self.output_track.push_frame(frame)
+    async def _pump_realtime_audio(self) -> None:
+        while True:
+            audio_b64 = await self._realtime_audio.get()
+            frame = self.converter.realtime_b64_to_aiortc_frame(audio_b64)
+            await self.output_track.push_frame(frame)
 
     def attach_input_track(self, track: MediaStreamTrack) -> None:
         self._audio_task = asyncio.create_task(self._consume_input_track(track))
@@ -197,6 +216,11 @@ class RTCGatewayCall:
                 self._audio_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._audio_task
+
+            if self._audio_out_task:
+                self._audio_out_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._audio_out_task
 
             try:
                 await self.gateway.stop()

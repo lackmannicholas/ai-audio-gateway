@@ -54,6 +54,12 @@ class RealtimeSessionConfig:
     greeting_instructions: str
     tools: list[ToolSpec] = field(default_factory=list)
     voice: str = "verse"
+    # Who owns endpointing. There must be exactly one authority: when the
+    # gateway's local VAD is gating, the backend disables server-side turn
+    # detection; when local VAD is unavailable (e.g. TEN VAD has no build for
+    # the platform), the backend leaves server VAD on so the buffer still gets
+    # committed and a response still gets created.
+    server_vad: bool = False
 
 
 class RealtimeBackend(abc.ABC):
@@ -80,8 +86,11 @@ class RealtimeBackend(abc.ABC):
         """Interrupt the in-flight response (barge-in)."""
 
     @abc.abstractmethod
-    async def submit_tool_output(self, tool_call_id: str, output_json: str) -> None:
-        """Return a tool result so the model can continue the turn."""
+    async def submit_tool_output(self, tool_call_id: str, output_json: str,
+                                 create_response: bool = True) -> None:
+        """Return a tool result. With ``create_response`` the model continues
+        the turn; without it the pending function call is merely resolved
+        (used for stale results that must not wake the model back up)."""
 
     @abc.abstractmethod
     def events(self) -> AsyncIterator[RealtimeEvent]:

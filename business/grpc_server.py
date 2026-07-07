@@ -21,6 +21,7 @@ agent — that selection is the only thing that differs between the two.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -203,8 +204,18 @@ class BusinessBridgeServer:
             is_error = True
             logger.exception("tool %s failed", name)
         finally:
-            await asyncio.sleep(0)  # let final local notifications drain
             drain_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await drain_task
+            # Flush notifications the drain task hadn't picked up yet, so the
+            # UI's local-call tree can't lose its trailing nodes.
+            while not session.local_tool_events.empty():
+                lname, _largs = session.local_tool_events.get_nowait()
+                await outbox.put(GatewayCommand(
+                    type=GatewayCommandType.SEND_MESSAGE,
+                    call_id=event.call_id,
+                    payload={"kind": "local_tool_call", "name": lname},
+                ).to_json_bytes())
 
         await outbox.put(GatewayCommand(
             type=GatewayCommandType.TOOL_CALL_OUTPUT,

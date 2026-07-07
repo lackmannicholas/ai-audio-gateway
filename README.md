@@ -106,8 +106,26 @@ tests/            contract, proxy relay, turn staleness, full stack, mTLS
   call → audio) so the architecture runs deterministically without a key.
   Browser speech synthesis is used as an audible stand-in in mock mode; use
   `make run-openai` for a real speech-to-speech conversation.
-- The **VAD** is a trivial energy gate — good enough to demo barge-in, not
-  production-grade. Swap in Silero/WebRTC VAD behind the same interface.
+- **Endpointing has exactly one authority.** Preferred is local TEN VAD: when
+  it's active the gateway disables server-side turn detection
+  (`turn_detection: null`), otherwise both VADs fire and every utterance
+  triggers duplicate responses. But TEN VAD ships no build for some platforms
+  (notably Linux `aarch64` — Docker on Apple Silicon), and there the gateway
+  falls back to a passthrough that does **not** gate; it then leaves OpenAI's
+  server VAD on so the buffer still commits and responses still happen. Either
+  way, one VAD owns endpointing, never zero and never both. Local TEN VAD
+  downsamples gateway audio from 24 kHz to 16 kHz for inference, keeps a short
+  pre-roll so speech onset is not clipped, and flushes only speech/hangover
+  audio to realtime. The hangover (`VAD__HANGOVER_FRAMES`, ~20 ms chunks;
+  15 = 300 ms) is a hard floor on response latency — the main latency/accuracy
+  trade-off knob.
+- The gateway emits a **`turn_latency`** event per turn (utterance commit →
+  first assistant audio), visible in the browser event log and the gateway
+  log — the number to watch when tuning.
+- On **barge-in** in OpenAI mode the gateway cancels the response, drops
+  in-flight audio deltas from the cancelled response, and truncates the
+  assistant's conversation item to roughly what was actually played, so the
+  model's context doesn't contain words the caller never heard.
 - **mTLS + a shared token** secure the bridge. In production you'd use rotated,
   short-lived signed tokens from a secrets manager rather than a static secret.
 - The agent loop (the "thinker") is **hand-rolled** on purpose — no agent SDK —

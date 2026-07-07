@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from urllib.parse import urlparse
@@ -28,6 +30,8 @@ from gateway.realtime.protocol import (
     RealtimeEventType,
     RealtimeSessionConfig,
 )
+
+logger = logging.getLogger("gateway.realtime.openai")
 
 _DEFAULT_REALTIME_URL = "wss://us.api.openai.com/v1/realtime"
 
@@ -59,6 +63,12 @@ def _url_with_model(url: str, model: str) -> str:
     return f"{url}{sep}model={model}"
 
 
+def _turn_detection_for(server_vad: bool) -> dict | None:
+    """The ``turn_detection`` block for a session. Server VAD when the gateway's
+    local VAD isn't gating, otherwise ``None`` (local VAD owns endpointing)."""
+    return {"type": "server_vad"} if server_vad else None
+
+
 def _describe_ws_close(exc: Exception) -> str:
     received = getattr(exc, "rcvd", None)
     code = getattr(received, "code", None)
@@ -79,6 +89,15 @@ class OpenAIRealtimeBackend(RealtimeBackend):
         self._ws = None
         self._out: asyncio.Queue[RealtimeEvent] = asyncio.Queue()
         self._reader: asyncio.Task | None = None
+        # Barge-in bookkeeping. A response.cancel is asynchronous: audio deltas
+        # for the cancelled response keep arriving until the server processes
+        # it, so we track the active response id and drop deltas from cancelled
+        # responses instead of letting them re-fill the playback queue.
+        self._active_response_id: str | None = None
+        self._active_item_id: str | None = None
+        self._audio_started_at: float | None = None
+        self._cancelled_response_ids: set[str] = set()
+        self._server_vad = False
 
     async def _connect(self) -> None:
         import websockets  # lazy
@@ -100,6 +119,12 @@ class OpenAIRealtimeBackend(RealtimeBackend):
             await self._connect()
         tools = [{"type": "function", "name": t.name, "description": t.description,
                   "parameters": t.params_json_schema} for t in config.tools]
+        # Exactly one endpointing authority. With local VAD gating we disable
+        # server turn detection (otherwise both VADs fire and every utterance
+        # triggers duplicate responses); without it we keep server VAD on so
+        # the buffer still gets committed and a response still gets created.
+        self._server_vad = config.server_vad
+        turn_detection = _turn_detection_for(config.server_vad)
         await self._send({
             "type": "session.update",
             "session": {
@@ -111,6 +136,7 @@ class OpenAIRealtimeBackend(RealtimeBackend):
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
+                        "turn_detection": turn_detection,
                         "transcription": {
                             "model": os.getenv(
                                 "TRANSCRIPT_MODEL",
@@ -142,15 +168,40 @@ class OpenAIRealtimeBackend(RealtimeBackend):
         await self._send(msg)
 
     async def cancel_response(self) -> None:
+        # Nothing is being generated — e.g. the demo barge-in button pressed
+        # while the assistant is idle. Skip the cancel so the server doesn't
+        # reject it with response_cancel_not_active, and skip the truncate
+        # (there is no item to truncate).
+        if self._active_response_id is None:
+            return
+        self._cancelled_response_ids.add(self._active_response_id)
         await self._send({"type": "response.cancel"})
+        # Truncate the assistant item to what the caller actually heard.
+        # Without this the model's context contains the full response text and
+        # later turns are grounded in words that were never spoken. Playback is
+        # paced in real time, so elapsed-since-first-delta approximates the
+        # audio milliseconds actually played.
+        if self._active_item_id is not None and self._audio_started_at is not None:
+            audio_end_ms = max(0, int((time.monotonic() - self._audio_started_at) * 1000))
+            await self._send({
+                "type": "conversation.item.truncate",
+                "item_id": self._active_item_id,
+                "content_index": 0,
+                "audio_end_ms": audio_end_ms,
+            })
+        self._active_response_id = None
+        self._active_item_id = None
+        self._audio_started_at = None
 
-    async def submit_tool_output(self, tool_call_id: str, output_json: str) -> None:
+    async def submit_tool_output(self, tool_call_id: str, output_json: str,
+                                 create_response: bool = True) -> None:
         await self._send({
             "type": "conversation.item.create",
             "item": {"type": "function_call_output",
                      "call_id": tool_call_id, "output": output_json},
         })
-        await self._send({"type": "response.create"})
+        if create_response:
+            await self._send({"type": "response.create"})
 
     async def _send(self, msg: dict) -> None:
         import websockets  # lazy
@@ -171,8 +222,17 @@ class OpenAIRealtimeBackend(RealtimeBackend):
                 ev = json.loads(raw)
                 t = ev.get("type", "")
                 if t in ("response.output_audio.delta", "response.audio.delta"):
+                    if ev.get("response_id") in self._cancelled_response_ids:
+                        continue  # in-flight delta from a barged-in response
+                    if self._audio_started_at is None:
+                        self._audio_started_at = time.monotonic()
+                    self._active_item_id = ev.get("item_id") or self._active_item_id
                     await self._out.put(RealtimeEvent(
                         RealtimeEventType.AUDIO_DELTA, {"audio_b64": ev.get("delta")}))
+                elif t == "response.created":
+                    self._active_response_id = (ev.get("response") or {}).get("id")
+                    self._active_item_id = None
+                    self._audio_started_at = None
                 elif t == "conversation.item.input_audio_transcription.completed":
                     await self._out.put(RealtimeEvent(
                         RealtimeEventType.TRANSCRIPT,
@@ -191,7 +251,19 @@ class OpenAIRealtimeBackend(RealtimeBackend):
                     await self._out.put(RealtimeEvent(
                         RealtimeEventType.SPEECH_STARTED, {}))
                 elif t == "response.done":
-                    await self._out.put(RealtimeEvent(RealtimeEventType.RESPONSE_DONE, {}))
+                    response_id = (ev.get("response") or {}).get("id")
+                    was_cancelled = response_id in self._cancelled_response_ids
+                    self._cancelled_response_ids.discard(response_id)
+                    if response_id == self._active_response_id:
+                        self._active_response_id = None
+                    if not was_cancelled:
+                        await self._out.put(RealtimeEvent(RealtimeEventType.RESPONSE_DONE, {}))
+                elif t == "error":
+                    # Non-fatal API errors (the transport is still up). Surface
+                    # them in the gateway log instead of dropping them silently.
+                    err = ev.get("error") or {}
+                    logger.warning("OpenAI Realtime error: %s (%s)",
+                                   err.get("message"), err.get("code"))
         except websockets.exceptions.ConnectionClosed as exc:
             await self._out.put(RealtimeEvent(
                 RealtimeEventType.ERROR,

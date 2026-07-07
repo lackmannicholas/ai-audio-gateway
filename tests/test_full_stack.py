@@ -14,11 +14,9 @@ import grpc
 import pytest
 
 from business.grpc_server import BusinessBridgeServer
+from gateway.audio.vad import VADResult
 from gateway.realtime.mock_backend import MockRealtimeBackend
 from gateway.session import GatewaySession
-
-
-import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +40,41 @@ class UICollector:
         return [d.get("name") for k, d in self.events if k == kind]
 
 
+class ScriptedVAD:
+    """Deterministic local-VAD stand-in for full-stack tests."""
+
+    def __init__(self) -> None:
+        self._calls = 0
+
+    def process(self, pcm16: bytes) -> VADResult:
+        self._calls += 1
+        if self._calls == 1:
+            return VADResult(
+                is_speech=True,
+                speech_probability=1.0,
+                frames_to_flush=[pcm16],
+                speech_started=True,
+            )
+        if self._calls <= 3:
+            return VADResult(
+                is_speech=True,
+                speech_probability=1.0,
+                frames_to_flush=[pcm16],
+            )
+        if self._calls == 4:
+            return VADResult(
+                is_speech=False,
+                speech_probability=0.0,
+                frames_to_flush=[],
+                speech_ended=True,
+            )
+        return VADResult(
+            is_speech=False,
+            speech_probability=0.0,
+            frames_to_flush=[],
+        )
+
+
 async def _run_one_turn(agent_kind: str, bind: str) -> UICollector:
     server = BusinessBridgeServer()
     await server.start(bind=bind)
@@ -52,17 +85,12 @@ async def _run_one_turn(agent_kind: str, bind: str) -> UICollector:
             business_addr=bind,
             agent_kind=agent_kind,
             ui=ui,
+            vad=ScriptedVAD(),
         )
         await session.start()
-        # The mock produces a full turn when we commit an utterance. Drive the
-        # VAD through a real start->stop: a few loud frames, then enough silence
-        # frames to cross the stop threshold (which triggers commit_audio).
-        loud = (b"\x00\x40" * 160)   # RMS ~16384, well above threshold
-        quiet = (b"\x00\x00" * 160)  # silence
-        for _ in range(3):
-            await session.on_caller_audio(loud)
-        for _ in range(12):
-            await session.on_caller_audio(quiet)
+        audio = b"\x00\x00" * 768
+        for _ in range(4):
+            await session.on_caller_audio(audio)
         # Give the turn time to run through tool relay + audio.
         await asyncio.sleep(1.2)
         await session.stop()

@@ -66,6 +66,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "starlette" },
+    { name = "ten-vad" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -91,6 +92,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "starlette", specifier = ">=0.40" },
+    { name = "ten-vad", specifier = ">=1.0.6" },
     { name = "uvicorn", specifier = ">=0.32" },
     { name = "websockets", specifier = ">=13" },
 ]
@@ -748,6 +750,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa/starlette-1.3.1.tar.gz", hash = "sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0", size = 2703240, upload-time = "2026-06-12T09:23:11.602Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl", hash = "sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6", size = 73632, upload-time = "2026-06-12T09:23:10.017Z" },
+]
+
+[[package]]
+name = "ten-vad"
+version = "1.0.6.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/c6/00ad5a4fbba29e9ff1b15b77f99f133d06180ef40f8548c520450fe4fa0a/ten_vad-1.0.6.8.tar.gz", hash = "sha256:af1fb4fcb81b2028a20b8a4dbc5662d9f103d0d75e1d62f36f131f58f148e4d5", size = 2554475, upload-time = "2025-11-14T15:13:00.285Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/01/31/2103a8c1de080b0b071ea1e7da73fbda1bccffa9e78642d1508a01864562/ten_vad-1.0.6.8-py3-none-any.whl", hash = "sha256:c881aecd774ee29f4fd4735c87265b888e5aed37f59bd3f87ea1fe26ab436eee", size = 1279204, upload-time = "2025-11-14T15:12:58.825Z" },
 ]
 
 [[package]]

@@ -51,7 +51,7 @@ class ProbeRealtimeBackend(RealtimeBackend):
 
     def __init__(self) -> None:
         self.out: asyncio.Queue[RealtimeEvent] = asyncio.Queue()
-        self.outputs: list[tuple[str, dict]] = []
+        self.outputs: list[tuple[str, dict, bool]] = []
         self.cancelled = 0
 
     async def configure(self, config: RealtimeSessionConfig) -> None:
@@ -69,8 +69,9 @@ class ProbeRealtimeBackend(RealtimeBackend):
     async def cancel_response(self) -> None:
         self.cancelled += 1
 
-    async def submit_tool_output(self, tool_call_id: str, output_json: str) -> None:
-        self.outputs.append((tool_call_id, json.loads(output_json)))
+    async def submit_tool_output(self, tool_call_id: str, output_json: str,
+                                 create_response: bool = True) -> None:
+        self.outputs.append((tool_call_id, json.loads(output_json), create_response))
 
     async def events(self) -> AsyncIterator[RealtimeEvent]:
         while True:
@@ -103,7 +104,7 @@ async def test_barge_in_makes_thinker_result_stale():
         await asyncio.sleep(0.1)  # ensure the thinker is mid-run, blocked on gate
 
         # Caller barges in: gateway bumps turn_id and notifies the business plane.
-        new_turn = await client.barge_in()
+        new_turn = await client.barge_in(1)
         assert new_turn == 1
         await asyncio.sleep(0.05)  # let the barge_in event arrive at the server
 
@@ -167,7 +168,13 @@ async def test_gateway_does_not_submit_stale_tool_output_after_barge_in(monkeypa
             await asyncio.sleep(0.05)
 
         assert backend.cancelled == 1
-        assert backend.outputs == []
+        # The dangling function call is resolved with a cancelled marker, but
+        # crucially WITHOUT create_response — the model is not woken back up.
+        assert backend.outputs == [(
+            "probe_tc",
+            {"cancelled": True, "reason": "superseded by barge-in"},
+            False,
+        )]
         assert any(kind == "tool_call_stale" for kind, _ in ui)
         assert not any(kind == "tool_call_output" for kind, _ in ui)
     finally:

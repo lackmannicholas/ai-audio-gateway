@@ -19,13 +19,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
 import grpc
 
 from gateway.audio.interrupt import InterruptState
-from gateway.audio.vad import EnergyVAD
+from gateway.audio.vad import LocalVAD, PassthroughVAD, build_local_vad
 from gateway.grpc_business_client import BusinessBridgeClient
 from gateway.realtime.protocol import (
     RealtimeBackend,
@@ -50,13 +51,22 @@ class GatewaySession:
         business_addr: str = "127.0.0.1:8002",
         agent_kind: str = "cafe_single",
         ui: UISink | None = None,
+        vad: LocalVAD | None = None,
+        pending_audio: Callable[[], bool] | None = None,
     ) -> None:
         self._realtime = realtime
         self._business_addr = business_addr
         self._agent_kind = agent_kind
         self._ui = ui or (lambda kind, data: None)
+        # Predicate: is there assistant audio still queued for playback? Set by
+        # the transport (rtc.py) to the output track's state. The realtime model
+        # streams audio faster than realtime, so a response finishes generating
+        # (response_active flips false) while seconds of it are still queued.
+        # Barge-in must fire during that tail too, or the interrupt is processed
+        # while stale audio keeps playing.
+        self._pending_audio = pending_audio
 
-        self._vad = EnergyVAD()
+        self._vad = vad or build_local_vad()
         self._interrupt = InterruptState()
         self._client: BusinessBridgeClient | None = None
         self._channel: grpc.aio.Channel | None = None
@@ -64,6 +74,10 @@ class GatewaySession:
         self._event_task: asyncio.Task | None = None
         self._relay_tasks: set[asyncio.Task] = set()
         self._stopped = False
+        # Turn-latency probe: stamped when the caller's utterance is committed,
+        # cleared when the first assistant audio arrives. The delta is the
+        # number a performance discussion actually cares about.
+        self._utterance_committed_at: float | None = None
 
     # -- lifecycle ----------------------------------------------------------- #
     async def start(self) -> None:
@@ -85,32 +99,56 @@ class GatewaySession:
         self._ui("session_configured",
                  {"agent": cfg.agent_name, "tools": list(cfg.proxies)})
 
+        # If local VAD isn't actually gating (passthrough fallback), the
+        # realtime backend must keep server-side turn detection on — otherwise
+        # nothing commits the audio buffer or creates a response.
+        local_endpointing = not isinstance(self._vad, PassthroughVAD)
+        if not local_endpointing:
+            logger.info(
+                "local VAD not gating; leaving server-side turn detection on")
         await self._realtime.configure(RealtimeSessionConfig(
             instructions=cfg.instructions,
             greeting_instructions=cfg.greeting_instructions,
             tools=[p.spec for p in cfg.proxies.values()],
+            server_vad=not local_endpointing,
         ))
 
         self._event_task = asyncio.create_task(self._pump_realtime_events())
 
     # -- inbound caller audio ------------------------------------------------ #
+    def _assistant_holding_channel(self) -> bool:
+        """The assistant occupies the channel while it is generating a response
+        OR while audio is still queued for playback."""
+        if self._interrupt.response_active:
+            return True
+        return bool(self._pending_audio and self._pending_audio())
+
     async def on_caller_audio(self, pcm: bytes) -> None:
-        verdict = self._vad.process(pcm)
-        if verdict == "start":
-            # Caller started talking. If the assistant is mid-response, barge-in.
-            if self._interrupt.response_active:
+        vad_result = self._vad.process(pcm)
+        if vad_result.speech_started:
+            # Caller started talking. If the assistant is still holding the
+            # channel (generating or playing), barge-in.
+            if self._assistant_holding_channel():
                 await self._barge_in()
-            self._ui("user_speech_started", {})
-        elif verdict == "stop":
+            self._ui("user_speech_started", {
+                "speech_probability": vad_result.speech_probability,
+            })
+
+        for chunk in vad_result.frames_to_flush:
+            await self._realtime.append_audio(chunk)
+
+        if vad_result.speech_ended:
             self._ui("user_speech_stopped", {})
             await self._realtime.commit_audio()
-        await self._realtime.append_audio(pcm)
+            self._utterance_committed_at = time.monotonic()
 
     async def _barge_in(self) -> None:
+        # InterruptState is the single source of truth for turn_id; the bridge
+        # client just carries it onto the wire.
         new_turn = self._interrupt.barge_in()
         await self._realtime.cancel_response()
         if self._client is not None:
-            await self._client.barge_in()  # bumps the wire turn_id too
+            await self._client.barge_in(new_turn)
         self._ui("barge_in", {"turn_id": new_turn})
         logger.info("barge-in -> turn %d", new_turn)
 
@@ -128,6 +166,11 @@ class GatewaySession:
             task.add_done_callback(self._relay_tasks.discard)
 
         elif ev.type is RealtimeEventType.AUDIO_DELTA:
+            if self._utterance_committed_at is not None:
+                latency_ms = int((time.monotonic() - self._utterance_committed_at) * 1000)
+                self._utterance_committed_at = None
+                self._ui("turn_latency", {"ms": latency_ms})
+                logger.info("turn latency (commit -> first audio): %dms", latency_ms)
             self._interrupt.begin_response()
             data = {"pcm_len": ev.payload.get("pcm_len", 0)}
             if "audio_b64" in ev.payload:
@@ -143,7 +186,7 @@ class GatewaySession:
             self._ui("response_done", {})
 
         elif ev.type is RealtimeEventType.SPEECH_STARTED:
-            if self._interrupt.response_active:
+            if self._assistant_holding_channel():
                 await self._barge_in()
 
         elif ev.type is RealtimeEventType.ERROR:
@@ -164,7 +207,14 @@ class GatewaySession:
         result = await proxy.call(args)
         if isinstance(result, dict) and result.get("stale") is True:
             # The business plane finished work for a turn the caller already
-            # interrupted. Do not wake the realtime model back up with it.
+            # interrupted. Do not wake the realtime model back up with it —
+            # but do resolve the pending function call, otherwise it dangles
+            # in the model's conversation and can break the next response.
+            await self._realtime.submit_tool_output(
+                tool_call_id,
+                json.dumps({"cancelled": True, "reason": "superseded by barge-in"}),
+                create_response=False,
+            )
             self._ui("tool_call_stale", {
                 "name": name,
                 "turn_id": result.get("turn_id"),

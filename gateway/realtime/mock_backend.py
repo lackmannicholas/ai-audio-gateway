@@ -34,8 +34,8 @@ from gateway.realtime.protocol import (
     RealtimeSessionConfig,
 )
 
-# 20ms of 8kHz 16-bit mono PCM = 320 bytes. Matches a telephony frame.
-_FRAME_BYTES = 320
+# 20ms of 24 kHz 16-bit mono PCM = 960 bytes. Matches the gateway's audio path.
+_FRAME_BYTES = 960
 _FRAMES_PER_RESPONSE = 25  # ~500ms of audio per assistant turn
 
 
@@ -45,6 +45,7 @@ class MockRealtimeBackend(RealtimeBackend):
         self._out: asyncio.Queue[RealtimeEvent] = asyncio.Queue()
         self._scripted = scripted_utterance
         self._pending_tool: asyncio.Future | None = None
+        self._turn_task: asyncio.Task | None = None  # keep a ref: bare create_task can be GC'd
         self._cancelled = False
         self._tool_names: set[str] = set()
 
@@ -62,14 +63,15 @@ class MockRealtimeBackend(RealtimeBackend):
 
     async def create_response(self, instructions: str | None = None) -> None:
         self._cancelled = False
-        asyncio.create_task(self._run_turn())
+        self._turn_task = asyncio.create_task(self._run_turn())
 
     async def cancel_response(self) -> None:
         self._cancelled = True
         if self._pending_tool and not self._pending_tool.done():
             self._pending_tool.cancel()
 
-    async def submit_tool_output(self, tool_call_id: str, output_json: str) -> None:
+    async def submit_tool_output(self, tool_call_id: str, output_json: str,
+                                 create_response: bool = True) -> None:
         if self._pending_tool and not self._pending_tool.done():
             self._pending_tool.set_result(output_json)
 
