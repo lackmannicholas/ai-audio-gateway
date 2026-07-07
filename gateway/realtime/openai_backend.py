@@ -107,9 +107,7 @@ class OpenAIRealtimeBackend(RealtimeBackend):
             additional_headers={
                 "Authorization": f"Bearer {key}",
                 "OpenAI-Safety-Identifier": os.getenv(
-                    "OPENAI_SAFETY_IDENTIFIER",
-                    "audio-gateway-poc",
-                ),
+                    "OPENAI_SAFETY_IDENTIFIER") or "audio-gateway-poc",
             },
         )
         self._reader = asyncio.create_task(self._read_loop())
@@ -139,9 +137,7 @@ class OpenAIRealtimeBackend(RealtimeBackend):
                         "turn_detection": turn_detection,
                         "transcription": {
                             "model": os.getenv(
-                                "TRANSCRIPT_MODEL",
-                                "gpt-4o-mini-transcribe",
-                            ),
+                                "TRANSCRIPT_MODEL") or "gpt-4o-mini-transcribe",
                         },
                     },
                     "output": {
@@ -288,7 +284,7 @@ class OpenAIRealtimeBackend(RealtimeBackend):
 def build_realtime_backend() -> RealtimeBackend:
     """Factory honoring REALTIME_BACKEND (mock | openai)."""
     if os.getenv("REALTIME_BACKEND", "mock").lower() == "openai":
-        return OpenAIRealtimeBackend(os.getenv("REALTIME_MODEL", "gpt-realtime-2"))
+        return OpenAIRealtimeBackend(os.getenv("REALTIME_MODEL") or "gpt-realtime-2")
     from gateway.realtime.mock_backend import MockRealtimeBackend
     return MockRealtimeBackend()
 

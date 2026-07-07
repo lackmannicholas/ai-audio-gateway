@@ -130,6 +130,9 @@ class BusinessBridgeClient:
             payload={"agent_kind": agent_kind},
         ))
         cmd = await self._inbox.get()
+        if cmd.type is GatewayCommandType.ERROR:
+            raise RuntimeError(
+                str(cmd.payload.get("message") or "business plane rejected the call"))
         if cmd.type is not GatewayCommandType.SESSION_CONFIGURE:
             raise RuntimeError(f"expected session.configure, got {cmd.type}")
 

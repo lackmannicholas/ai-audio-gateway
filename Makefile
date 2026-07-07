@@ -2,8 +2,10 @@
 
 .PHONY: install certs business gateway run test clean
 
+# Installs the openai extra too, so `make run-openai` works out of the box.
+# Mock mode ignores it — no key, no cost.
 install:
-	pip install -e ".[dev]"
+	pip install -e ".[dev,openai]"
 
 # Generate local mTLS certs (optional — without them the bridge runs insecure).
 certs:

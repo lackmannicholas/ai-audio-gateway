@@ -14,7 +14,12 @@ services:
     environment:
       - BUSINESS_ADDR=0.0.0.0:8002
       - THINKER_BACKEND=${THINKER_BACKEND:-mock}
+      - THINKER_MODEL=${THINKER_MODEL:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Regional endpoint (e.g. https://us.api.openai.com/v1). Empty falls back
+      # to the code's regional default; the thinker 401s against api.openai.com
+      # for regionally-pinned accounts.
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
     expose:
       - "8002"
 
@@ -27,6 +32,13 @@ services:
       - GATEWAY_PORT=8001
       - REALTIME_BACKEND=${REALTIME_BACKEND:-mock}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Regional/config knobs for the realtime backend. Empty values fall back
+      # to code defaults (the getenv reads are empty-safe).
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_REALTIME_URL=${OPENAI_REALTIME_URL:-}
+      - REALTIME_MODEL=${REALTIME_MODEL:-}
+      - TRANSCRIPT_MODEL=${TRANSCRIPT_MODEL:-}
+      - OPENAI_SAFETY_IDENTIFIER=${OPENAI_SAFETY_IDENTIFIER:-}
     ports:
       - "8001:8001"
     depends_on:

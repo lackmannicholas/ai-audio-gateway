@@ -47,6 +47,10 @@ export OPENAI_BASE_URL=https://us.api.openai.com/v1
 make run-openai      # REALTIME_BACKEND=openai THINKER_BACKEND=openai
 ```
 
+The responder-thinker agent's thinker uses the OpenAI SDK in this mode, so the
+`openai` extra must be installed. `make install` and the Docker image already
+include it; if you installed some other way, add `pip install -e ".[openai]"`.
+
 You can also put local settings in a repo-root `.env` file. Values already set
 in your shell take precedence over `.env`; see `.env.example` for the common
 knobs. The realtime websocket uses `OPENAI_REALTIME_URL` if set, then

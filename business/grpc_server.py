@@ -115,8 +115,21 @@ class BusinessBridgeServer:
 
                 if event.type is GatewayEventType.CALL_STARTED:
                     agent_kind = str(event.payload.get("agent_kind") or "cafe_single")
-                    agent = _select_agent(agent_kind)
-                    session = BusinessSession(event.call_id, agent)
+                    try:
+                        agent = _select_agent(agent_kind)
+                        session = BusinessSession(event.call_id, agent)
+                    except Exception as exc:  # noqa: BLE001 - report, don't hang
+                        # e.g. THINKER_BACKEND=openai but the `openai` extra
+                        # isn't installed. If we let this propagate, the gateway
+                        # waits forever for session.configure. Surface it so the
+                        # gateway fails the connect with a clear message instead.
+                        logger.exception("agent init failed for %s", agent_kind)
+                        await outbox.put(GatewayCommand(
+                            type=GatewayCommandType.ERROR,
+                            call_id=event.call_id,
+                            payload={"message": f"agent init failed: {exc}"},
+                        ).to_json_bytes())
+                        break
                     logger.info("call %s -> agent %s (%d exposed tools)",
                                 event.call_id, agent.name, len(session.toolset.specs()))
                     await outbox.put(GatewayCommand(

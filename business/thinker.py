@@ -123,12 +123,21 @@ class MockThinkerModel(ThinkerModel):
             return str(v)
 
 
+_DEFAULT_THINKER_BASE_URL = "https://us.api.openai.com/v1"
+
+
 class OpenAIThinkerModel(ThinkerModel):
     """Real OpenAI chat-completions tool calling. Used when THINKER_BACKEND=openai."""
 
     def __init__(self, toolset: Toolset, model: str = "gpt-4o-mini") -> None:
         from openai import AsyncOpenAI  # lazy: only needed in this mode
-        self._client = AsyncOpenAI()
+        # Mirror the realtime backend's regional default. A bare AsyncOpenAI()
+        # targets api.openai.com, which 401s ("incorrect_hostname") for accounts
+        # pinned to a regional endpoint like us.api.openai.com. Honor
+        # OPENAI_BASE_URL when set; otherwise use the same regional default the
+        # realtime path uses.
+        base_url = os.getenv("OPENAI_BASE_URL") or _DEFAULT_THINKER_BASE_URL
+        self._client = AsyncOpenAI(base_url=base_url)
         self._model = model
         self._tool_schemas = [
             {"type": "function",
@@ -163,7 +172,7 @@ class OpenAIThinkerModel(ThinkerModel):
 
 def _default_model(toolset: Toolset) -> ThinkerModel:
     if os.getenv("THINKER_BACKEND", "mock").lower() == "openai":
-        return OpenAIThinkerModel(toolset)
+        return OpenAIThinkerModel(toolset, model=os.getenv("THINKER_MODEL") or "gpt-4o-mini")
     return MockThinkerModel()
 
 
