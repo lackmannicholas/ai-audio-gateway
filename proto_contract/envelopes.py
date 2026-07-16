@@ -47,7 +47,11 @@ class GatewayEventType(str, enum.Enum):
     # User speech (driven by VAD)
     USER_SPEECH_STARTED = "user.speech_started"
     USER_SPEECH_STOPPED = "user.speech_stopped"
+    # Transcripts, pushed across the wire so the business plane can guardrail
+    # them. The user side finalizes once; the assistant side may update as the
+    # response streams.
     USER_TRANSCRIPT_COMPLETED = "user.transcript_completed"
+    RESPONSE_TRANSCRIPT_UPDATED = "response.transcript_updated"
 
     # Model response lifecycle
     RESPONSE_STARTED = "response.started"
@@ -192,6 +196,25 @@ class BargeInPayload(BaseModel):
     turn_id: int
 
 
+class TranscriptPayload(BaseModel):
+    """Body of a transcript event (gateway -> business), fed to guardrails."""
+
+    role: str  # "user" | "assistant"
+    text: str = ""
+
+
+class ResponseCancelPayload(BaseModel):
+    """Body of a ``response.cancel`` command (business -> gateway).
+
+    Sent when a guardrail trips: the gateway cancels the in-flight response and
+    clears the audio queues. ``rule``/``reason`` are informational (for the UI
+    and logs) — the gateway acts on the command regardless of them.
+    """
+
+    rule: str | None = None
+    reason: str | None = None
+
+
 __all__ = [
     "GatewayEventType",
     "GatewayCommandType",
@@ -202,4 +225,6 @@ __all__ = [
     "ToolCallRequestedPayload",
     "ToolCallOutputPayload",
     "BargeInPayload",
+    "TranscriptPayload",
+    "ResponseCancelPayload",
 ]

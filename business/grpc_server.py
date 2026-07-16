@@ -31,6 +31,7 @@ import grpc
 from business.agents.base import VoiceAgent
 from business.agents.responder_thinker import ResponderThinkerAgent
 from business.agents.single_agent import SingleVoiceAgent
+from business.guardrails import build_guardrails
 from business.tools.base import ToolContext
 from proto_contract.auth import verify_token
 from proto_contract.channel import add_bridge_handler
@@ -57,6 +58,9 @@ class BusinessSession:
         self.call_id = call_id
         self.agent = agent
         self.toolset = agent.exposed_toolset()
+        # Safety policy for this call. Lives here in the business plane, not in
+        # the media plane or the model prompt: centralized, testable, swappable.
+        self.guardrails = build_guardrails()
         # Mirrors the gateway's turn_id. Updated on barge_in. The thinker
         # snapshots this before slow work and compares after (staleness).
         self.current_turn_id = 0
@@ -157,6 +161,29 @@ class BusinessBridgeServer:
                     if session is not None:
                         session.current_turn_id = int(event.payload.get("turn_id") or 0)
                         logger.info("barge_in: turn_id -> %d", session.current_turn_id)
+
+                elif event.type in (
+                    GatewayEventType.USER_TRANSCRIPT_COMPLETED,
+                    GatewayEventType.RESPONSE_TRANSCRIPT_UPDATED,
+                ):
+                    # A transcript crossed the wire. Run it through the session's
+                    # guardrails; on a violation, tell the gateway to cancel the
+                    # response. This is the whole point of guardrailing in the
+                    # business plane: the policy is here, the enforcement is a
+                    # single command back to the media plane.
+                    if session is None:
+                        continue
+                    role = str(event.payload.get("role") or "")
+                    text = str(event.payload.get("text") or "")
+                    verdict = session.guardrails.evaluate(role, text)
+                    if not verdict.allowed:
+                        logger.info("guardrail %s blocked %s transcript: %s",
+                                    verdict.rule, role, verdict.reason)
+                        await outbox.put(GatewayCommand(
+                            type=GatewayCommandType.RESPONSE_CANCEL,
+                            call_id=event.call_id,
+                            payload={"rule": verdict.rule, "reason": verdict.reason},
+                        ).to_json_bytes())
 
                 elif event.type is GatewayEventType.CALL_ENDED:
                     logger.info("call %s ended", event.call_id)

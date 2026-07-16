@@ -80,6 +80,10 @@ class BusinessBridgeClient:
         self._inbox: asyncio.Queue[GatewayCommand] = asyncio.Queue()
         # informational local-tool-call notifications for the UI
         self.on_local_tool_call: Callable[[str], None] | None = None
+        # Business-initiated response.cancel (e.g. a guardrail tripped). The
+        # session sets this to a handler that cancels the realtime response and
+        # clears the audio queues.
+        self.on_response_cancel: Callable[[dict], Awaitable[None]] | None = None
 
         self._call_id = "call_" + uuid.uuid4().hex[:8]
         self._turn_id = 0
@@ -114,6 +118,9 @@ class BusinessBridgeClient:
                         cmd.payload.get("kind") == "local_tool_call":
                     if self.on_local_tool_call:
                         self.on_local_tool_call(str(cmd.payload.get("name")))
+                elif cmd.type is GatewayCommandType.RESPONSE_CANCEL:
+                    if self.on_response_cancel:
+                        await self.on_response_cancel(dict(cmd.payload))
                 else:
                     await self._inbox.put(cmd)
         except asyncio.CancelledError:
@@ -169,6 +176,18 @@ class BusinessBridgeClient:
         return await fut
 
     # -- media-plane events the gateway reports ------------------------------ #
+    async def send_transcript(self, role: str, text: str) -> None:
+        """Push a transcript to the business plane for guardrailing."""
+        event_type = (
+            GatewayEventType.RESPONSE_TRANSCRIPT_UPDATED if role == "assistant"
+            else GatewayEventType.USER_TRANSCRIPT_COMPLETED
+        )
+        await self._send_event(GatewayEvent(
+            type=event_type,
+            call_id=self._call_id,
+            payload={"role": role, "text": text},
+        ))
+
     async def barge_in(self, turn_id: int) -> int:
         """Caller interrupted. The session's InterruptState owns the turn_id;
         this just records it and carries it across the wire."""

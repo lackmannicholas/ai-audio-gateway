@@ -92,6 +92,7 @@ class GatewaySession:
         self._client = BusinessBridgeClient(self._channel, metadata=auth_metadata())
         self._client.on_local_tool_call = lambda name: self._ui(
             "local_tool_call", {"name": name})
+        self._client.on_response_cancel = self._on_guardrail_cancel
         await self._client.open()
 
         cfg = await self._client.start_session(self._agent_kind)
@@ -152,6 +153,22 @@ class GatewaySession:
         self._ui("barge_in", {"turn_id": new_turn})
         logger.info("barge-in -> turn %d", new_turn)
 
+    async def _on_guardrail_cancel(self, payload: dict) -> None:
+        """A guardrail tripped in the business plane. Stop the response now.
+
+        Cancel generation at the realtime model and end the response state; the
+        ``guardrail_blocked`` UI event tells the transport to clear the audio
+        queues, so already-generated audio stops immediately — same enforcement
+        path a barge-in uses, just triggered by the meaning plane instead of the
+        caller.
+        """
+        rule = payload.get("rule")
+        reason = payload.get("reason")
+        logger.info("guardrail %s -> response.cancel: %s", rule, reason)
+        await self._realtime.cancel_response()
+        self._interrupt.end_response()
+        self._ui("guardrail_blocked", {"rule": rule, "reason": reason})
+
     # -- outbound realtime events -------------------------------------------- #
     async def _pump_realtime_events(self) -> None:
         async for ev in self._realtime.events():
@@ -178,8 +195,12 @@ class GatewaySession:
             self._ui("audio_delta", data)
 
         elif ev.type is RealtimeEventType.TRANSCRIPT:
-            self._ui("transcript", {"role": ev.payload.get("role"),
-                                    "text": ev.payload.get("text", "")})
+            role = ev.payload.get("role")
+            text = ev.payload.get("text", "")
+            self._ui("transcript", {"role": role, "text": text})
+            # Push it across the wire so the business plane can guardrail it.
+            if self._client is not None and role in ("user", "assistant"):
+                await self._client.send_transcript(str(role), str(text))
 
         elif ev.type is RealtimeEventType.RESPONSE_DONE:
             self._interrupt.end_response()

@@ -193,6 +193,11 @@ function handleEvent(ev) {
     case "turn_latency":
       logEvent("turn latency · " + ev.ms + "ms (commit → first audio)");
       break;
+    case "guardrail_blocked":
+      markStale();
+      logEvent("guardrail ✕ blocked · " + (ev.reason || ev.rule || "policy"), "barge");
+      logEvent("response.cancel (business plane)", "barge");
+      break;
     case "barge_in":
       turnId = ev.turn_id;
       $("turnval").textContent = turnId;

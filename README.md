@@ -170,6 +170,49 @@ cancelled response, and truncates the model's conversation item to roughly what
 was actually played, so the next turn isn't grounded in words the caller never
 heard.
 
+## Guardrails run in the business plane
+
+> **Important:** safety and policy belong in the **business plane**, not the
+> media plane and not the model's prompt. The gateway forwards transcripts
+> across the wire; the business plane evaluates them and, on a violation, sends a
+> `response.cancel` command back; the gateway enforces it by cancelling the
+> realtime response and clearing the audio queues. The media plane never needs to
+> know the policy — only that it was told to stop.
+
+That division is the whole argument for two planes, applied to safety. The rule
+lives in one place ([`business/guardrails.py`](business/guardrails.py)),
+centralized and unit-testable, and it applies identically no matter which agent
+or realtime model is behind it. Enforcement reuses the exact cancel-and-clear
+path a caller barge-in uses — a guardrail is just a barge-in triggered by the
+meaning plane instead of the caller.
+
+The flow, end to end:
+
+```
+model transcript ─▶ gateway ──(transcript)──▶ business plane
+                                                 guardrail.evaluate(role, text)
+gateway ◀─(response.cancel)──────────────────── ✕ blocked
+  └─ cancel realtime response + clear audio queues
+```
+
+The reference guardrail is deliberately trivial — a blocked-topic substring
+match, default `weather` — so the *mechanism* is the lesson, not the classifier.
+In production you'd swap it for a moderation model, a PII detector, or a policy
+LLM; the interface is the same (`check(role, text) -> allow | block`), and it
+still runs off the audio hot path.
+
+Try it with no API key:
+
+```bash
+# The mock emits this as the caller line; the assistant turn gets cancelled.
+MOCK_UTTERANCE="what's the weather today?" make run
+# open http://localhost:8001, Connect — watch "guardrail ✕ blocked" in the log.
+```
+
+Configure it with `GUARDRAIL_BLOCKED_TOPICS` (comma-separated; empty to
+disable). In OpenAI mode, just ask the assistant about the weather and watch the
+response get cut off mid-sentence.
+
 ## Endpointing: one clock, one authority
 
 Deciding *when the caller stopped talking* is where responsiveness is won or
@@ -207,7 +250,7 @@ proto_contract/   the wire contract (envelopes, channel, auth) — shared by bot
 gateway/          media plane: ASGI app, gRPC client (proxies), realtime backends, audio
 business/         business plane: gRPC server (relay), agents, tools, the thinker loop
 harness/          browser audio client + mTLS cert generator
-tests/            contract, proxy relay, turn staleness, endpointing, full stack, mTLS
+tests/            contract, proxy relay, turn staleness, endpointing, guardrails, full stack, mTLS
 ```
 
 ## Notes & honest caveats

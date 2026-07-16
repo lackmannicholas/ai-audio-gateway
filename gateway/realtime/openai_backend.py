@@ -286,6 +286,12 @@ def build_realtime_backend() -> RealtimeBackend:
     if os.getenv("REALTIME_BACKEND", "mock").lower() == "openai":
         return OpenAIRealtimeBackend(os.getenv("REALTIME_MODEL") or "gpt-realtime-2")
     from gateway.realtime.mock_backend import MockRealtimeBackend
+    # MOCK_UTTERANCE overrides the scripted caller line. Handy for demoing the
+    # guardrail with no API key: set it to something that mentions a blocked
+    # topic (e.g. "what's the weather?") and watch the turn get cancelled.
+    utterance = os.getenv("MOCK_UTTERANCE")
+    if utterance:
+        return MockRealtimeBackend(utterance)
     return MockRealtimeBackend()
 
 

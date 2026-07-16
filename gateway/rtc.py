@@ -161,9 +161,10 @@ class RTCGatewayCall:
             audio_b64 = event_data.pop("audio_b64", None)
             if audio_b64:
                 self._realtime_audio.put_nowait(str(audio_b64))
-        elif kind == "barge_in":
-            # Drop everything not yet played: pending conversions and the
-            # paced track's queue.
+        elif kind in ("barge_in", "guardrail_blocked"):
+            # Stop playback now: drop pending conversions and the paced track's
+            # queue. A caller barge-in and a business-plane guardrail cancel both
+            # need the already-generated audio gone immediately.
             while not self._realtime_audio.empty():
                 try:
                     self._realtime_audio.get_nowait()
