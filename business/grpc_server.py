@@ -31,6 +31,7 @@ import grpc
 from business.agents.base import VoiceAgent
 from business.agents.responder_thinker import ResponderThinkerAgent
 from business.agents.single_agent import SingleVoiceAgent
+from business.tools.base import ToolContext
 from proto_contract.auth import verify_token
 from proto_contract.channel import add_bridge_handler
 from proto_contract.envelopes import (
@@ -70,18 +71,18 @@ class BusinessSession:
                 await self.local_tool_events.put((name, args))
             thinker.on_tool_call = _note
 
-        # If this agent has a consult_thinker tool, give it a staleness predicate
-        # that compares the snapshotted turn against the live turn. A barge-in
-        # advances current_turn_id, which makes any in-flight thinker run stale.
-        consult = self.toolset._by_name.get("consult_thinker")  # noqa: SLF001
-        if consult is not None:
-            consult.is_stale = lambda snapshot: snapshot != self.current_turn_id
+    def tool_context(self, snapshot_turn: int) -> ToolContext:
+        """Build the runtime context for one tool invocation.
 
-    def stamp_turn(self) -> None:
-        """Stamp the consult tool with the live turn before invoking it."""
-        consult = self.toolset._by_name.get("consult_thinker")  # noqa: SLF001
-        if consult is not None:
-            consult.current_turn_id = self.current_turn_id
+        ``is_stale`` closes over this session, so it always compares the
+        invocation's snapshot against the *live* turn. A barge-in advances
+        current_turn_id, which makes any in-flight tool/thinker run stale.
+        """
+        return ToolContext(
+            call_id=self.call_id,
+            turn_id=snapshot_turn,
+            is_stale=lambda: snapshot_turn != self.current_turn_id,
+        )
 
 
 class BusinessBridgeServer:
@@ -187,7 +188,7 @@ class BusinessBridgeServer:
         snapshot_turn = int(event.payload.get("turn_id") or 0)
         if snapshot_turn > session.current_turn_id:
             session.current_turn_id = snapshot_turn
-        session.stamp_turn()
+        ctx = session.tool_context(snapshot_turn)
 
         args: dict = {}
         args_json = event.payload.get("arguments_json")
@@ -210,7 +211,7 @@ class BusinessBridgeServer:
 
         drain_task = asyncio.create_task(drain_local())
         try:
-            result = await session.toolset.invoke(name, args)
+            result = await session.toolset.invoke(name, args, ctx)
             is_error = False
         except Exception as exc:  # noqa: BLE001 - surface to gateway
             result = {"error": str(exc)}

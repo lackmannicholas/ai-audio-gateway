@@ -26,7 +26,7 @@ from typing import Any
 
 from business.agents.base import VoiceAgent
 from business.thinker import Thinker, ThinkerModel
-from business.tools.base import Tool, Toolset
+from business.tools.base import Tool, Toolset, ToolContext
 from business.tools.cafe_tools import build_cafe_toolset
 
 _RESPONDER_INSTRUCTIONS = """\
@@ -65,22 +65,14 @@ class ConsultThinkerTool(Tool):
 
     def __init__(self, thinker: Thinker) -> None:
         self._thinker = thinker
-        # Set per-call by the business session: the turn this call belongs to,
-        # and a predicate to check whether that turn has gone stale (barge-in).
-        self.current_turn_id: int = 0
-        self.is_stale: "Any" = None
 
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         request = str(arguments.get("request", "")).strip()
         # This call fans out into multiple café-tool calls inside the business
-        # plane. None of them cross the gateway wire. The turn_id + staleness
-        # check let a barge-in abandon this work instead of speaking a stale
-        # answer over a conversation that has moved on.
-        return await self._thinker.run(
-            request,
-            turn_id=self.current_turn_id,
-            is_stale=self.is_stale,
-        )
+        # plane. None of them cross the gateway wire. The ctx (turn + staleness)
+        # rides along so a barge-in can abandon this work instead of speaking a
+        # stale answer over a conversation that has moved on.
+        return await self._thinker.run(request, ctx)
 
 
 class ResponderThinkerAgent(VoiceAgent):

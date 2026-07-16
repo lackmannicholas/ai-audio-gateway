@@ -23,9 +23,34 @@ stays in the meaning plane.
 from __future__ import annotations
 
 import abc
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from proto_contract.envelopes import ToolSpec
+
+
+@dataclass
+class ToolContext:
+    """Per-invocation runtime context handed to every ``Tool.invoke``.
+
+    This is the first-class channel for "which call / which turn is this?" that
+    the tool layer otherwise lacks. It carries the call identity, the turn this
+    invocation belongs to (snapshotted from the wire), and a staleness check the
+    tool can consult during slow work — if the caller barged in, ``is_stale()``
+    flips True and the tool can abandon rather than return an answer that would
+    be spoken over a conversation that moved on.
+
+    The context is built per tool call by the business session and threaded all
+    the way down — including into the thinker's nested café-tool calls — so any
+    tool, not just one specially-wired one, can see it.
+    """
+
+    call_id: str
+    #: The turn this invocation was issued on (snapshot at call time).
+    turn_id: int
+    #: No-arg predicate: has the live turn moved past this invocation's turn?
+    is_stale: Callable[[], bool]
 
 
 class Tool(abc.ABC):
@@ -42,8 +67,12 @@ class Tool(abc.ABC):
     strict_json_schema: bool = True
 
     @abc.abstractmethod
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         """Execute the tool. Runs in the business plane, never on the hot path.
+
+        ``arguments`` is what the realtime model filled in; ``ctx`` is the
+        per-call runtime context (call id, turn, staleness). A tool that needs
+        none of the latter simply ignores it.
 
         The return value must be JSON-serializable; it is what travels back
         across the wire to the gateway proxy and then to the realtime model.
@@ -87,8 +116,9 @@ class Toolset:
         except KeyError:
             raise KeyError(f"unknown tool: {name!r}") from None
 
-    async def invoke(self, name: str, arguments: dict[str, Any]) -> Any:
-        return await self.get(name).invoke(arguments)
+    async def invoke(self, name: str, arguments: dict[str, Any],
+                     ctx: ToolContext) -> Any:
+        return await self.get(name).invoke(arguments, ctx)
 
 
-__all__ = ["Tool", "Toolset"]
+__all__ = ["Tool", "Toolset", "ToolContext"]

@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from business.domain.cafe import MENU, STORE, STORE_HOURS
-from business.tools.base import Tool, Toolset
+from business.tools.base import Tool, Toolset, ToolContext
 
 
 class GetMenuTool(Tool):
@@ -20,7 +20,7 @@ class GetMenuTool(Tool):
     )
     params_json_schema = {"type": "object", "properties": {}, "additionalProperties": False}
 
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         return [
             {
                 "name": item.name,
@@ -49,7 +49,7 @@ class GetStoreHoursTool(Tool):
         "additionalProperties": False,
     }
 
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         day = (arguments.get("day") or "").strip().lower()
         if day:
             return {day: STORE_HOURS.get(day, "closed")}
@@ -84,7 +84,7 @@ class PlaceOrderTool(Tool):
         "additionalProperties": False,
     }
 
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         raw_items = arguments.get("items") or []
         priced: list[dict] = []
         for it in raw_items:
@@ -110,7 +110,7 @@ class CheckOrderStatusTool(Tool):
         "additionalProperties": False,
     }
 
-    async def invoke(self, arguments: dict[str, Any]) -> Any:
+    async def invoke(self, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         order = STORE.get_order(str(arguments.get("order_id", "")))
         if order is None:
             return {"found": False}

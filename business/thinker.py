@@ -25,11 +25,10 @@ from __future__ import annotations
 import abc
 import json
 import os
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from business.tools.base import Toolset
+from business.tools.base import Toolset, ToolContext
 
 
 # --------------------------------------------------------------------------- #
@@ -196,36 +195,32 @@ class Thinker:
         # "local" events.
         self.on_tool_call = None
 
-    async def run(self, request: str,
-                  turn_id: int = 0,
-                  is_stale: "Callable[[int], bool] | None" = None) -> dict[str, Any]:
+    async def run(self, request: str, ctx: ToolContext) -> dict[str, Any]:
         """Run the tool-calling loop.
 
-        ``turn_id`` is the turn this thinker run belongs to (snapshotted from the
-        gateway at call time). ``is_stale(turn_id)`` is checked before and after
-        each slow step; if it returns True, the conversation has moved on (the
-        caller barged in) and we abandon the work rather than return an answer
-        that would be spoken over a stale context.
+        ``ctx`` is the invocation context threaded down from the business
+        session. ``ctx.is_stale()`` is checked before and after each slow step;
+        if it returns True, the conversation has moved on (the caller barged in)
+        and we abandon the work rather than return an answer that would be
+        spoken over a stale context. The same ``ctx`` is passed to every nested
+        café-tool call, so staleness propagates through the whole fan-out.
         """
         history: list[dict] = []
 
-        def _stale() -> bool:
-            return is_stale(turn_id) if is_stale is not None else False
-
         for _ in range(self._max_steps):
-            if _stale():
-                return {"stale": True, "turn_id": turn_id}
+            if ctx.is_stale():
+                return {"stale": True, "turn_id": ctx.turn_id}
             step = await self._model.step(request, history)
             if step.final_text is not None and not step.tool_calls:
-                if _stale():
-                    return {"stale": True, "turn_id": turn_id}
+                if ctx.is_stale():
+                    return {"stale": True, "turn_id": ctx.turn_id}
                 return {"answer": step.final_text}
             for call in step.tool_calls:
-                if _stale():
-                    return {"stale": True, "turn_id": turn_id}
+                if ctx.is_stale():
+                    return {"stale": True, "turn_id": ctx.turn_id}
                 if self.on_tool_call is not None:
                     await self.on_tool_call(call.name, call.arguments)
-                result = await self._toolset.invoke(call.name, call.arguments)
+                result = await self._toolset.invoke(call.name, call.arguments, ctx)
                 history.append({
                     "role": "tool",
                     "name": call.name,
