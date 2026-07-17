@@ -30,7 +30,8 @@ from proto_contract.envelopes import ToolSpec
 
 
 class RealtimeEventType(str, enum.Enum):
-    TRANSCRIPT = "transcript"            # user or assistant text
+    TRANSCRIPT = "transcript"            # user or assistant text (finalized)
+    TRANSCRIPT_DELTA = "transcript_delta"  # incremental assistant transcript chunk
     AUDIO_DELTA = "audio_delta"          # a chunk of assistant audio
     TOOL_CALL = "tool_call"              # model wants to call a tool
     RESPONSE_DONE = "response_done"      # assistant turn complete

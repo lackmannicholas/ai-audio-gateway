@@ -48,10 +48,11 @@ class GatewayEventType(str, enum.Enum):
     USER_SPEECH_STARTED = "user.speech_started"
     USER_SPEECH_STOPPED = "user.speech_stopped"
     # Transcripts, pushed across the wire so the business plane can guardrail
-    # them. The user side finalizes once; the assistant side may update as the
-    # response streams.
+    # them. The user side finalizes once; the assistant side streams as deltas
+    # (keyed by response_id) so a guardrail can cancel mid-sentence, before the
+    # banned content is fully spoken.
     USER_TRANSCRIPT_COMPLETED = "user.transcript_completed"
-    RESPONSE_TRANSCRIPT_UPDATED = "response.transcript_updated"
+    RESPONSE_TRANSCRIPT_DELTA = "response.transcript_delta"
 
     # Model response lifecycle
     RESPONSE_STARTED = "response.started"
@@ -197,10 +198,23 @@ class BargeInPayload(BaseModel):
 
 
 class TranscriptPayload(BaseModel):
-    """Body of a transcript event (gateway -> business), fed to guardrails."""
+    """Body of a ``user.transcript_completed`` event, fed to guardrails."""
 
     role: str  # "user" | "assistant"
     text: str = ""
+
+
+class TranscriptDeltaPayload(BaseModel):
+    """Body of a ``response.transcript_delta`` event.
+
+    An incremental chunk of the assistant's transcript. ``response_id`` groups
+    deltas belonging to the same response so the business plane knows when to
+    start a fresh transcript buffer.
+    """
+
+    role: str = "assistant"
+    delta: str = ""
+    response_id: str = ""
 
 
 class ResponseCancelPayload(BaseModel):
@@ -226,5 +240,6 @@ __all__ = [
     "ToolCallOutputPayload",
     "BargeInPayload",
     "TranscriptPayload",
+    "TranscriptDeltaPayload",
     "ResponseCancelPayload",
 ]

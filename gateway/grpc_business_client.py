@@ -176,16 +176,22 @@ class BusinessBridgeClient:
         return await fut
 
     # -- media-plane events the gateway reports ------------------------------ #
-    async def send_transcript(self, role: str, text: str) -> None:
-        """Push a transcript to the business plane for guardrailing."""
-        event_type = (
-            GatewayEventType.RESPONSE_TRANSCRIPT_UPDATED if role == "assistant"
-            else GatewayEventType.USER_TRANSCRIPT_COMPLETED
-        )
+    async def send_user_transcript(self, text: str) -> None:
+        """Push the caller's finalized transcript for input guardrailing."""
         await self._send_event(GatewayEvent(
-            type=event_type,
+            type=GatewayEventType.USER_TRANSCRIPT_COMPLETED,
             call_id=self._call_id,
-            payload={"role": role, "text": text},
+            payload={"role": "user", "text": text},
+        ))
+
+    async def send_transcript_delta(self, role: str, delta: str,
+                                    response_id: str) -> None:
+        """Push an incremental assistant transcript chunk for streaming
+        output guardrailing."""
+        await self._send_event(GatewayEvent(
+            type=GatewayEventType.RESPONSE_TRANSCRIPT_DELTA,
+            call_id=self._call_id,
+            payload={"role": role, "delta": delta, "response_id": response_id},
         ))
 
     async def barge_in(self, turn_id: int) -> int:

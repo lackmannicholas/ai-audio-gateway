@@ -186,30 +186,42 @@ or realtime model is behind it. Enforcement reuses the exact cancel-and-clear
 path a caller barge-in uses — a guardrail is just a barge-in triggered by the
 meaning plane instead of the caller.
 
+**It runs on the streaming transcript, not the finished one.** The assistant's
+transcript is pushed across the wire delta-by-delta (keyed by `response_id`); the
+business plane accumulates it per response and re-checks on *every* chunk, so a
+violation is caught the instant the banned word forms — even split across deltas
+(`"weat"` + `"her"`) — and the response is cancelled **mid-sentence**, before the
+rest is spoken. Waiting for the finalized transcript would be too late: the
+caller would already have heard it. The caller's own transcript is guardrailed
+too, on the input side, when it finalizes.
+
 The flow, end to end:
 
 ```
-model transcript ─▶ gateway ──(transcript)──▶ business plane
-                                                 guardrail.evaluate(role, text)
-gateway ◀─(response.cancel)──────────────────── ✕ blocked
-  └─ cancel realtime response + clear audio queues
+assistant transcript deltas ─▶ gateway ──(delta, response_id)──▶ business plane
+   "Sure," "the" "weather" ...                                    accumulate + evaluate
+gateway ◀────────(response.cancel)────────────────────────────── ✕ blocked at "weather"
+   └─ cancel generation + clear audio queues   (assistant is cut off mid-sentence)
 ```
 
 The reference guardrail is deliberately trivial — a blocked-topic substring
 match, default `weather` — so the *mechanism* is the lesson, not the classifier.
-In production you'd swap it for a moderation model, a PII detector, or a policy
-LLM; the interface is the same (`check(role, text) -> allow | block`), and it
-still runs off the audio hot path.
+In production you'd swap it for a streaming moderation model, a PII detector, or
+a policy LLM; the interface is the same (`check(role, text) -> allow | block`),
+and it still runs off the audio hot path.
 
 Try it with no API key:
 
 ```bash
-# The mock emits this as the caller line; the assistant turn gets cancelled.
+# Make the mock assistant stream a line about the weather — watch it get cut off.
+MOCK_ASSISTANT_UTTERANCE="Sure, the weather today is sunny and warm." make run
+# open http://localhost:8001, Connect — the turn stops at "weather".
+
+# Or guardrail the caller's input instead:
 MOCK_UTTERANCE="what's the weather today?" make run
-# open http://localhost:8001, Connect — watch "guardrail ✕ blocked" in the log.
 ```
 
-Configure it with `GUARDRAIL_BLOCKED_TOPICS` (comma-separated; empty to
+Configure the policy with `GUARDRAIL_BLOCKED_TOPICS` (comma-separated; empty to
 disable). In OpenAI mode, just ask the assistant about the weather and watch the
 response get cut off mid-sentence.
 

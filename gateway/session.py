@@ -194,13 +194,26 @@ class GatewaySession:
                 data["audio_b64"] = ev.payload["audio_b64"]
             self._ui("audio_delta", data)
 
+        elif ev.type is RealtimeEventType.TRANSCRIPT_DELTA:
+            # Stream the assistant transcript across the wire chunk-by-chunk so
+            # the business plane can guardrail it as it forms and cancel
+            # mid-sentence.
+            if self._client is not None:
+                await self._client.send_transcript_delta(
+                    str(ev.payload.get("role") or "assistant"),
+                    str(ev.payload.get("delta") or ""),
+                    str(ev.payload.get("response_id") or ""),
+                )
+
         elif ev.type is RealtimeEventType.TRANSCRIPT:
             role = ev.payload.get("role")
             text = ev.payload.get("text", "")
             self._ui("transcript", {"role": role, "text": text})
-            # Push it across the wire so the business plane can guardrail it.
-            if self._client is not None and role in ("user", "assistant"):
-                await self._client.send_transcript(str(role), str(text))
+            # The caller's finalized transcript goes across for input
+            # guardrailing. The assistant's finalized transcript is display-only
+            # here — its deltas already did the guardrailing as it streamed.
+            if self._client is not None and role == "user":
+                await self._client.send_user_transcript(str(text))
 
         elif ev.type is RealtimeEventType.RESPONSE_DONE:
             self._interrupt.end_response()

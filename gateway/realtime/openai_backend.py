@@ -233,6 +233,14 @@ class OpenAIRealtimeBackend(RealtimeBackend):
                     await self._out.put(RealtimeEvent(
                         RealtimeEventType.TRANSCRIPT,
                         {"role": "user", "text": ev.get("transcript", "")}))
+                elif t in ("response.output_audio_transcript.delta",
+                           "response.audio_transcript.delta"):
+                    # Streaming assistant transcript. Forwarded to the business
+                    # plane per-chunk so a guardrail can cancel mid-sentence.
+                    await self._out.put(RealtimeEvent(
+                        RealtimeEventType.TRANSCRIPT_DELTA,
+                        {"role": "assistant", "delta": ev.get("delta", ""),
+                         "response_id": ev.get("response_id", "")}))
                 elif t in ("response.output_audio_transcript.done",
                            "response.audio_transcript.done"):
                     await self._out.put(RealtimeEvent(

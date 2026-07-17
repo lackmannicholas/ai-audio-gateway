@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import AsyncIterator
 
 from gateway.realtime.protocol import (
@@ -48,6 +49,7 @@ class MockRealtimeBackend(RealtimeBackend):
         self._turn_task: asyncio.Task | None = None  # keep a ref: bare create_task can be GC'd
         self._cancelled = False
         self._tool_names: set[str] = set()
+        self._response_counter = 0
 
     async def configure(self, config: RealtimeSessionConfig) -> None:
         self._config = config
@@ -103,20 +105,53 @@ class MockRealtimeBackend(RealtimeBackend):
         if self._cancelled:
             return
 
-        # 3. assistant transcript + audio
-        await self._out.put(RealtimeEvent(
-            RealtimeEventType.TRANSCRIPT,
-            {"role": "assistant", "text": spoken}))
-        for _ in range(_FRAMES_PER_RESPONSE):
+        # MOCK_ASSISTANT_UTTERANCE forces what the assistant "says", so the
+        # streaming output guardrail can be demoed with no API key (set it to a
+        # line that mentions a blocked topic and watch it get cut off).
+        override = os.getenv("MOCK_ASSISTANT_UTTERANCE")
+        if override:
+            spoken = override
+
+        # 3. Stream the assistant transcript as deltas interleaved with audio, so
+        #    a business-plane guardrail can cancel mid-sentence. Each delta and
+        #    audio frame checks _cancelled, so the turn stops the instant the
+        #    gateway relays a response.cancel.
+        self._response_counter += 1
+        response_id = f"mock_resp_{self._response_counter}"
+        words = spoken.split(" ")
+        frames_left = _FRAMES_PER_RESPONSE
+        for i, word in enumerate(words):
             if self._cancelled:
                 return
             await self._out.put(RealtimeEvent(
-                RealtimeEventType.AUDIO_DELTA,
-                {"pcm_len": _FRAME_BYTES}))
-            await asyncio.sleep(0.02)  # real 20ms cadence so barge-in timing is real
+                RealtimeEventType.TRANSCRIPT_DELTA,
+                {"role": "assistant",
+                 "delta": word if i == 0 else " " + word,
+                 "response_id": response_id}))
+            for _ in range(2):  # ~40ms of audio per word
+                if self._cancelled:
+                    return
+                await self._out.put(RealtimeEvent(
+                    RealtimeEventType.AUDIO_DELTA, {"pcm_len": _FRAME_BYTES}))
+                await asyncio.sleep(0.02)  # real 20ms cadence
+                frames_left -= 1
 
-        if not self._cancelled:
-            await self._out.put(RealtimeEvent(RealtimeEventType.RESPONSE_DONE, {}))
+        while frames_left > 0:
+            if self._cancelled:
+                return
+            await self._out.put(RealtimeEvent(
+                RealtimeEventType.AUDIO_DELTA, {"pcm_len": _FRAME_BYTES}))
+            await asyncio.sleep(0.02)
+            frames_left -= 1
+
+        if self._cancelled:
+            return
+        # Finalized transcript (UI display + a backstop for any consumer that
+        # guardrails on the completed text rather than deltas).
+        await self._out.put(RealtimeEvent(
+            RealtimeEventType.TRANSCRIPT,
+            {"role": "assistant", "text": spoken}))
+        await self._out.put(RealtimeEvent(RealtimeEventType.RESPONSE_DONE, {}))
 
     async def _call_tool(self, name: str, args: dict) -> str:
         """Emit a tool_call event and await the gateway's submit_tool_output."""

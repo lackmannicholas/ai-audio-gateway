@@ -31,7 +31,7 @@ import grpc
 from business.agents.base import VoiceAgent
 from business.agents.responder_thinker import ResponderThinkerAgent
 from business.agents.single_agent import SingleVoiceAgent
-from business.guardrails import build_guardrails
+from business.guardrails import GuardrailVerdict, build_guardrails
 from business.tools.base import ToolContext
 from proto_contract.auth import verify_token
 from proto_contract.channel import add_bridge_handler
@@ -51,6 +51,15 @@ def _select_agent(agent_kind: str) -> VoiceAgent:
     return SingleVoiceAgent()
 
 
+def _response_cancel_cmd(call_id: str, verdict: GuardrailVerdict) -> bytes:
+    """A ``response.cancel`` command carrying the guardrail's reason."""
+    return GatewayCommand(
+        type=GatewayCommandType.RESPONSE_CANCEL,
+        call_id=call_id,
+        payload={"rule": verdict.rule, "reason": verdict.reason},
+    ).to_json_bytes()
+
+
 class BusinessSession:
     """Per-call state living in the business plane."""
 
@@ -61,6 +70,12 @@ class BusinessSession:
         # Safety policy for this call. Lives here in the business plane, not in
         # the media plane or the model prompt: centralized, testable, swappable.
         self.guardrails = build_guardrails()
+        # Streaming guardrail state: the assistant transcript accumulates per
+        # response so a blocked topic split across deltas is still caught, and
+        # so we cancel a given response at most once.
+        self._assistant_transcript = ""
+        self._guardrail_response_id: str | None = None
+        self._guardrail_tripped = False
         # Mirrors the gateway's turn_id. Updated on barge_in. The thinker
         # snapshots this before slow work and compares after (staleness).
         self.current_turn_id = 0
@@ -74,6 +89,26 @@ class BusinessSession:
             async def _note(name: str, args: dict) -> None:
                 await self.local_tool_events.put((name, args))
             thinker.on_tool_call = _note
+
+    def check_assistant_delta(self, response_id: str, delta: str) -> GuardrailVerdict:
+        """Accumulate a streaming assistant transcript delta and re-evaluate.
+
+        Buffering per ``response_id`` means a topic split across deltas
+        ("weat" + "her") is still caught, and a fresh response starts a fresh
+        buffer. Once a response is flagged, later deltas for it are ignored so we
+        never cancel the same response twice.
+        """
+        if response_id != self._guardrail_response_id:
+            self._guardrail_response_id = response_id
+            self._assistant_transcript = ""
+            self._guardrail_tripped = False
+        if self._guardrail_tripped:
+            return GuardrailVerdict(allowed=True)
+        self._assistant_transcript += delta
+        verdict = self.guardrails.evaluate("assistant", self._assistant_transcript)
+        if not verdict.allowed:
+            self._guardrail_tripped = True
+        return verdict
 
     def tool_context(self, snapshot_turn: int) -> ToolContext:
         """Build the runtime context for one tool invocation.
@@ -162,28 +197,34 @@ class BusinessBridgeServer:
                         session.current_turn_id = int(event.payload.get("turn_id") or 0)
                         logger.info("barge_in: turn_id -> %d", session.current_turn_id)
 
-                elif event.type in (
-                    GatewayEventType.USER_TRANSCRIPT_COMPLETED,
-                    GatewayEventType.RESPONSE_TRANSCRIPT_UPDATED,
-                ):
-                    # A transcript crossed the wire. Run it through the session's
-                    # guardrails; on a violation, tell the gateway to cancel the
-                    # response. This is the whole point of guardrailing in the
-                    # business plane: the policy is here, the enforcement is a
-                    # single command back to the media plane.
+                elif event.type is GatewayEventType.USER_TRANSCRIPT_COMPLETED:
+                    # Input guardrail: check the caller's finalized transcript.
                     if session is None:
                         continue
-                    role = str(event.payload.get("role") or "")
-                    text = str(event.payload.get("text") or "")
-                    verdict = session.guardrails.evaluate(role, text)
+                    verdict = session.guardrails.evaluate(
+                        "user", str(event.payload.get("text") or ""))
                     if not verdict.allowed:
-                        logger.info("guardrail %s blocked %s transcript: %s",
-                                    verdict.rule, role, verdict.reason)
-                        await outbox.put(GatewayCommand(
-                            type=GatewayCommandType.RESPONSE_CANCEL,
-                            call_id=event.call_id,
-                            payload={"rule": verdict.rule, "reason": verdict.reason},
-                        ).to_json_bytes())
+                        logger.info("guardrail %s blocked user transcript: %s",
+                                    verdict.rule, verdict.reason)
+                        await outbox.put(
+                            _response_cancel_cmd(event.call_id, verdict))
+
+                elif event.type is GatewayEventType.RESPONSE_TRANSCRIPT_DELTA:
+                    # Streaming output guardrail: accumulate the assistant
+                    # transcript and re-check on every delta, so a violation is
+                    # caught the instant it forms and the response is cancelled
+                    # mid-sentence. The policy is here in the business plane; the
+                    # enforcement is a single command back to the media plane.
+                    if session is None:
+                        continue
+                    verdict = session.check_assistant_delta(
+                        str(event.payload.get("response_id") or ""),
+                        str(event.payload.get("delta") or ""))
+                    if not verdict.allowed:
+                        logger.info("guardrail %s blocked assistant transcript: %s",
+                                    verdict.rule, verdict.reason)
+                        await outbox.put(
+                            _response_cancel_cmd(event.call_id, verdict))
 
                 elif event.type is GatewayEventType.CALL_ENDED:
                     logger.info("call %s ended", event.call_id)
